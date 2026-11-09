@@ -1,6 +1,9 @@
 @echo off
 cd /d "%~dp0"
-echo Pushing FlowWallet to https://github.com/wiguclub/mnapp.git ...
+echo ========================================================
+echo Pushing FlowWallet to https://wiguclub@github.com/wiguclub/mnapp.git
+echo (If a GitHub Sign-In window pops up, please sign in with account: wiguclub)
+echo ========================================================
 git branch -M main
 git push -u origin main
 echo.
