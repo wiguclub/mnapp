@@ -210,16 +210,15 @@ export default function MoneyAppPage() {
   }, []);
 
   // Load Google Identity Services (One-Tap / Sign In with Google) if Client ID is configured
+  const googleClientId =
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || '';
+
   useEffect(() => {
     if (!hydrated || currentUser || typeof window === 'undefined') return;
-    const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
     if (!googleClientId) return;
 
-    const script = document.createElement('script');
-    script.src = 'https://accounts.google.com/gsi/client';
-    script.async = true;
-    script.defer = true;
-    script.onload = () => {
+    const existingScript = document.getElementById('google-gsi-script');
+    const initGsi = () => {
       if (window.google?.accounts?.id) {
         window.google.accounts.id.initialize({
           client_id: googleClientId,
@@ -238,11 +237,33 @@ export default function MoneyAppPage() {
           },
           auto_select: true,
         });
+        const btnContainer = document.getElementById('google-official-btn');
+        if (btnContainer) {
+          window.google.accounts.id.renderButton(btnContainer, {
+            theme: 'outline',
+            size: 'large',
+            width: 340,
+            text: 'continue_with',
+            shape: 'pill',
+          });
+        }
         window.google.accounts.id.prompt();
       }
     };
+
+    if (existingScript) {
+      initGsi();
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.id = 'google-gsi-script';
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    script.onload = initGsi;
     document.body.appendChild(script);
-  }, [hydrated, currentUser]);
+  }, [hydrated, currentUser, googleClientId]);
 
   // Current user's family group
   const currentFamily = useMemo(() => {
@@ -939,6 +960,16 @@ export default function MoneyAppPage() {
 
           {!showGoogleEmailStep ? (
             <div>
+              {googleClientId && (
+                <div
+                  id="google-official-btn"
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'center',
+                    marginBottom: 14,
+                  }}
+                />
+              )}
               <button
                 type="button"
                 onClick={handleGoogleButtonClick}
