@@ -59,3 +59,4 @@ npm run dev
 3. *(ทางเลือก)* หากต้องการเชื่อมฐานข้อมูลจริงบน Supabase:
    - รันไฟล์ SQL ใน [`supabase/schema.sql`](./supabase/schema.sql) บน Supabase SQL Editor
    - ตั้งค่า `NEXT_PUBLIC_SUPABASE_URL` และ `NEXT_PUBLIC_SUPABASE_ANON_KEY` ในหน้า Environment Variables ของ Vercel
+"# mnapp" 
