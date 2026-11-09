@@ -209,9 +209,10 @@ export default function MoneyAppPage() {
     setHydrated(true);
   }, []);
 
-  // Load Google Identity Services (One-Tap / Sign In with Google) if Client ID is configured
+  // Load Google Identity Services (One-Tap / Sign In with Google)
   const googleClientId =
-    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || '';
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ||
+    '200977643476-bpmib6emq7n3c870i8430keqjh929j0q.apps.googleusercontent.com';
 
   useEffect(() => {
     if (!hydrated || currentUser || typeof window === 'undefined') return;
@@ -239,8 +240,9 @@ export default function MoneyAppPage() {
         });
         const btnContainer = document.getElementById('google-official-btn');
         if (btnContainer) {
+          btnContainer.innerHTML = '';
           window.google.accounts.id.renderButton(btnContainer, {
-            theme: 'outline',
+            theme: 'filled_blue',
             size: 'large',
             width: 340,
             text: 'continue_with',
@@ -251,18 +253,20 @@ export default function MoneyAppPage() {
       }
     };
 
-    if (existingScript) {
+    if (existingScript && window.google?.accounts?.id) {
       initGsi();
       return;
     }
 
-    const script = document.createElement('script');
-    script.id = 'google-gsi-script';
-    script.src = 'https://accounts.google.com/gsi/client';
-    script.async = true;
-    script.defer = true;
-    script.onload = initGsi;
-    document.body.appendChild(script);
+    if (!existingScript) {
+      const script = document.createElement('script');
+      script.id = 'google-gsi-script';
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.defer = true;
+      script.onload = initGsi;
+      document.body.appendChild(script);
+    }
   }, [hydrated, currentUser, googleClientId]);
 
   // Current user's family group
@@ -371,14 +375,40 @@ export default function MoneyAppPage() {
     };
   }, [assetAccounts, creditAccounts, visibleLoans, visibleTransactions]);
 
-  // Handle "Continue with Google" Button Click
+  // Handle "Continue with Google" Button Click (Opens real Google OAuth Popup)
   const handleGoogleButtonClick = () => {
     if (isSupabaseConfigured()) {
       startSupabaseGoogleLogin();
       return;
     }
-    if (typeof window !== 'undefined' && window.google?.accounts?.id) {
-      window.google.accounts.id.prompt();
+    if (typeof window !== 'undefined' && window.google?.accounts?.oauth2 && googleClientId) {
+      const tokenClient = window.google.accounts.oauth2.initTokenClient({
+        client_id: googleClientId,
+        scope: 'openid email profile',
+        callback: async (tokenResponse) => {
+          if (tokenResponse && tokenResponse.access_token) {
+            try {
+              const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+                headers: { Authorization: `Bearer ${tokenResponse.access_token}` },
+              });
+              const profile = await res.json();
+              if (profile && profile.email) {
+                const latestState = loadAppState();
+                completeUserSession(
+                  latestState,
+                  profile.email,
+                  profile.name || profile.email.split('@')[0],
+                  profile.picture || ''
+                );
+                showToast(`เข้าสู่ระบบด้วย ${profile.email} สำเร็จ`);
+              }
+            } catch {
+              setShowGoogleEmailStep(true);
+            }
+          }
+        },
+      });
+      tokenClient.requestAccessToken({ prompt: 'select_account' });
       return;
     }
     setShowGoogleEmailStep(true);
