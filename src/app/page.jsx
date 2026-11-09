@@ -9,7 +9,6 @@ import {
   saveAppState,
   loadCurrentUser,
   saveCurrentUser,
-  createEmptyAppState,
   decodeJwtPayload,
   isSupabaseConfigured,
   startSupabaseGoogleLogin,
@@ -40,13 +39,26 @@ export default function MoneyAppPage() {
   const [customName, setCustomName] = useState('');
   const [loginError, setLoginError] = useState('');
 
-  // Modals State
+  // Modals State (Create & Edit)
   const [showTxModal, setShowTxModal] = useState(false);
+  const [editingTx, setEditingTx] = useState(null); // null = create, object = edit
+
   const [showAccountModal, setShowAccountModal] = useState(false);
+  const [editingAccount, setEditingAccount] = useState(null); // null = create, object = edit
+
   const [showPayCardModal, setShowPayCardModal] = useState(null);
+
   const [showInstallmentModal, setShowInstallmentModal] = useState(false);
+  const [editingInstallment, setEditingInstallment] = useState(null); // null = create, object = edit
+
   const [showLoanModal, setShowLoanModal] = useState(false);
+  const [editingLoan, setEditingLoan] = useState(null); // null = create, object = edit
+
   const [showRepayLoanModal, setShowRepayLoanModal] = useState(null);
+  const [showEditProfileModal, setShowEditProfileModal] = useState(false);
+  const [profileNameInput, setProfileNameInput] = useState('');
+  const [familyNameEditInput, setFamilyNameEditInput] = useState('');
+
   const [toastMessage, setToastMessage] = useState('');
 
   // Transaction Form State
@@ -61,7 +73,7 @@ export default function MoneyAppPage() {
   const [txInstallmentMonths, setTxInstallmentMonths] = useState('6');
   const [txShared, setTxShared] = useState(false);
 
-  // New Account / Card Form State
+  // Account / Card Form State
   const [accName, setAccName] = useState('');
   const [accType, setAccType] = useState('bank');
   const [accBalance, setAccBalance] = useState('');
@@ -76,17 +88,19 @@ export default function MoneyAppPage() {
   const [payCardFromAccId, setPayCardFromAccId] = useState('');
   const [payCardAmount, setPayCardAmount] = useState('');
 
-  // New Installment Form State
+  // Installment Form State
   const [instTitle, setInstTitle] = useState('');
   const [instAccountId, setInstAccountId] = useState('');
   const [instTotalAmount, setInstTotalAmount] = useState('');
   const [instMonths, setInstMonths] = useState('10');
+  const [instPaidMonths, setInstPaidMonths] = useState('0');
   const [instShared, setInstShared] = useState(false);
 
-  // New Loan Form State
+  // Loan Form State
   const [loanType, setLoanType] = useState('lend');
   const [loanPerson, setLoanPerson] = useState('');
   const [loanAmount, setLoanAmount] = useState('');
+  const [loanPaidAmount, setLoanPaidAmount] = useState('0');
   const [loanAccountId, setLoanAccountId] = useState('');
   const [loanDueDate, setLoanDueDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [loanNote, setLoanNote] = useState('');
@@ -117,7 +131,6 @@ export default function MoneyAppPage() {
     });
   };
 
-  // Register or restore a user's isolated workspace by their Gmail
   const completeUserSession = (stateSnapshot, email, name, pictureUrl) => {
     const cleanEmail = (email || '').trim().toLowerCase();
     if (!cleanEmail) return;
@@ -145,7 +158,6 @@ export default function MoneyAppPage() {
     };
 
     const today = new Date().toISOString().slice(0, 10);
-    // Create 1 default Cash wallet with 0 THB for this new Gmail user (no fake data!)
     const starterCashAcc = {
       id: `acc-${Date.now()}`,
       ownerEmail: cleanEmail,
@@ -174,12 +186,10 @@ export default function MoneyAppPage() {
     saveCurrentUser(newUser);
   };
 
-  // Initial Load + Auto-Login from Session or OAuth Redirect Hash
   useEffect(() => {
     const loadedState = loadAppState();
     setAppState(loadedState);
 
-    // 1. Check if returning from Google OAuth / Supabase OAuth redirect (#access_token or #id_token)
     if (typeof window !== 'undefined' && window.location.hash) {
       const hashParams = new URLSearchParams(window.location.hash.substring(1));
       const idToken = hashParams.get('id_token') || hashParams.get('access_token');
@@ -200,7 +210,6 @@ export default function MoneyAppPage() {
       }
     }
 
-    // 2. Auto-login existing user session on this browser
     const savedUser = loadCurrentUser();
     if (savedUser && savedUser.email) {
       completeUserSession(loadedState, savedUser.email, savedUser.name, savedUser.avatar);
@@ -209,7 +218,7 @@ export default function MoneyAppPage() {
     setHydrated(true);
   }, []);
 
-  // Load Google Identity Services (One-Tap / Sign In with Google)
+  // Load Google Identity Services
   const googleClientId =
     process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ||
     '200977643476-bpmib6emq7n3c870i8430keqjh929j0q.apps.googleusercontent.com';
@@ -281,7 +290,6 @@ export default function MoneyAppPage() {
     );
   }, [appState, currentUser]);
 
-  // Strictly isolated data per Gmail (unless viewing Family Shared items of the same house)
   const visibleAccounts = useMemo(() => {
     if (!appState || !currentUser) return [];
     if (viewMode === 'family' && currentFamily) {
@@ -375,7 +383,6 @@ export default function MoneyAppPage() {
     };
   }, [assetAccounts, creditAccounts, visibleLoans, visibleTransactions]);
 
-  // Handle "Continue with Google" Button Click (Opens real Google OAuth Popup)
   const handleGoogleButtonClick = () => {
     if (isSupabaseConfigured()) {
       startSupabaseGoogleLogin();
@@ -414,7 +421,6 @@ export default function MoneyAppPage() {
     setShowGoogleEmailStep(true);
   };
 
-  // Handle Direct Gmail Sign-In
   const handleLoginWithGmail = (e) => {
     e.preventDefault();
     let cleanEmail = (customGmail || '').trim().toLowerCase();
@@ -422,7 +428,6 @@ export default function MoneyAppPage() {
       setLoginError('กรุณากรอกอีเมล Gmail ของคุณ');
       return;
     }
-    // If user typed just their username without @, append @gmail.com automatically
     if (!cleanEmail.includes('@')) {
       cleanEmail = `${cleanEmail}@gmail.com`;
     }
@@ -439,8 +444,56 @@ export default function MoneyAppPage() {
     setCustomName('');
   };
 
-  // Open Transaction Modal
+  // ============================================================================
+  // PROFILE & FAMILY NAME EDITING
+  // ============================================================================
+  const openEditProfileModal = () => {
+    setProfileNameInput(currentUser?.name || '');
+    setFamilyNameEditInput(currentFamily?.name || '');
+    setShowEditProfileModal(true);
+  };
+
+  const handleSaveProfileAndFamily = (e) => {
+    e.preventDefault();
+    const newName = profileNameInput.trim() || currentUser.name;
+    const newHouseName = familyNameEditInput.trim();
+
+    updateState((prev) => ({
+      ...prev,
+      users: prev.users.map((u) =>
+        u.email === currentUser.email ? { ...u, name: newName } : u
+      ),
+      accounts: prev.accounts.map((a) =>
+        a.ownerEmail === currentUser.email ? { ...a, ownerName: newName } : a
+      ),
+      transactions: prev.transactions.map((t) =>
+        t.ownerEmail === currentUser.email ? { ...t, ownerName: newName } : t
+      ),
+      installments: prev.installments.map((inst) =>
+        inst.ownerEmail === currentUser.email ? { ...inst, ownerName: newName } : inst
+      ),
+      loans: prev.loans.map((l) =>
+        l.ownerEmail === currentUser.email ? { ...l, ownerName: newName } : l
+      ),
+      familyGroups: prev.familyGroups.map((fg) =>
+        currentFamily && fg.id === currentFamily.id && newHouseName
+          ? { ...fg, name: newHouseName }
+          : fg
+      ),
+    }));
+
+    const updatedUser = { ...currentUser, name: newName };
+    setCurrentUser(updatedUser);
+    saveCurrentUser(updatedUser);
+    setShowEditProfileModal(false);
+    showToast('บันทึกข้อมูลชื่อเรียบร้อยแล้ว');
+  };
+
+  // ============================================================================
+  // TRANSACTIONS: CREATE, EDIT, DELETE
+  // ============================================================================
   const openNewTransactionModal = (defaultType = 'expense') => {
+    setEditingTx(null);
     setTxType(defaultType);
     setTxAmount('');
     setTxNote('');
@@ -456,11 +509,56 @@ export default function MoneyAppPage() {
     if (secondAcc) {
       setTxToAccountId(secondAcc.id);
     }
+    setTxDate(new Date().toISOString().slice(0, 10));
     setShowTxModal(true);
   };
 
-  // Submit Transaction
-  const handleAddTransaction = (e) => {
+  const openEditTransactionModal = (tx) => {
+    setEditingTx(tx);
+    setTxType(tx.type === 'card_payment' ? 'transfer' : tx.type);
+    setTxAmount(String(tx.amount));
+    setTxCategory(tx.category || 'food');
+    setTxAccountId(tx.accountId);
+    setTxToAccountId(tx.toAccountId || '');
+    setTxNote(tx.note || '');
+    setTxDate(tx.txDate || new Date().toISOString().slice(0, 10));
+    setTxShared(Boolean(tx.isSharedWithFamily));
+    setTxIsInstallment(false);
+    setShowTxModal(true);
+  };
+
+  // Helper to apply or reverse a transaction's balance effect on accounts
+  const applyTxEffectToAccounts = (accountsList, tx, multiplier = 1) => {
+    const amt = Number(tx.amount || 0) * multiplier;
+    return accountsList.map((acc) => {
+      if (tx.type === 'income' && acc.id === tx.accountId) {
+        if (ACCOUNT_TYPE_META[acc.type]?.isLiability) {
+          return { ...acc, usedAmount: Math.max(0, Number(acc.usedAmount) - amt) };
+        }
+        return { ...acc, balance: Number(acc.balance) + amt };
+      }
+      if (tx.type === 'expense' && acc.id === tx.accountId) {
+        if (ACCOUNT_TYPE_META[acc.type]?.isLiability) {
+          return { ...acc, usedAmount: Math.max(0, Number(acc.usedAmount) + amt) };
+        }
+        return { ...acc, balance: Number(acc.balance) - amt };
+      }
+      if (tx.type === 'transfer' || tx.type === 'card_payment') {
+        if (acc.id === tx.accountId) {
+          return { ...acc, balance: Number(acc.balance) - amt };
+        }
+        if (acc.id === tx.toAccountId) {
+          if (ACCOUNT_TYPE_META[acc.type]?.isLiability) {
+            return { ...acc, usedAmount: Math.max(0, Number(acc.usedAmount) - amt) };
+          }
+          return { ...acc, balance: Number(acc.balance) + amt };
+        }
+      }
+      return acc;
+    });
+  };
+
+  const handleSaveTransaction = (e) => {
     e.preventDefault();
     const amount = parseFloat(txAmount);
     if (!amount || amount <= 0 || !txAccountId) return;
@@ -472,43 +570,24 @@ export default function MoneyAppPage() {
     const today = txDate || new Date().toISOString().slice(0, 10);
 
     updateState((prev) => {
-      const updatedAccounts = prev.accounts.map((acc) => {
-        if (txType === 'income' && acc.id === txAccountId) {
-          if (ACCOUNT_TYPE_META[acc.type]?.isLiability) {
-            return { ...acc, usedAmount: Math.max(0, Number(acc.usedAmount) - amount) };
-          }
-          return { ...acc, balance: Number(acc.balance) + amount };
-        }
-        if (txType === 'expense' && acc.id === txAccountId) {
-          if (ACCOUNT_TYPE_META[acc.type]?.isLiability) {
-            return { ...acc, usedAmount: Number(acc.usedAmount) + amount };
-          }
-          return { ...acc, balance: Number(acc.balance) - amount };
-        }
-        if (txType === 'transfer') {
-          if (acc.id === txAccountId) {
-            return { ...acc, balance: Number(acc.balance) - amount };
-          }
-          if (acc.id === txToAccountId) {
-            if (ACCOUNT_TYPE_META[acc.type]?.isLiability) {
-              return { ...acc, usedAmount: Math.max(0, Number(acc.usedAmount) - amount) };
-            }
-            return { ...acc, balance: Number(acc.balance) + amount };
-          }
-        }
-        return acc;
-      });
+      let workingAccounts = prev.accounts;
+      // If editing an existing transaction, reverse its old effect first
+      if (editingTx) {
+        workingAccounts = applyTxEffectToAccounts(workingAccounts, editingTx, -1);
+      }
 
-      const newTx = {
-        id: `tx-${Date.now()}`,
-        ownerEmail: currentUser.email,
-        ownerName: currentUser.name,
+      const resolvedType =
+        txType === 'transfer' &&
+        prev.accounts.find((a) => a.id === txToAccountId && ACCOUNT_TYPE_META[a.type]?.isLiability)
+          ? 'card_payment'
+          : txType;
+
+      const updatedTxObj = {
+        id: editingTx ? editingTx.id : `tx-${Date.now()}`,
+        ownerEmail: editingTx ? editingTx.ownerEmail : currentUser.email,
+        ownerName: editingTx ? editingTx.ownerName : currentUser.name,
         isSharedWithFamily: txShared,
-        type:
-          txType === 'transfer' &&
-          prev.accounts.find((a) => a.id === txToAccountId && ACCOUNT_TYPE_META[a.type]?.isLiability)
-            ? 'card_payment'
-            : txType,
+        type: resolvedType,
         amount,
         category: txType === 'transfer' ? 'transfer' : txCategory,
         note:
@@ -521,11 +600,13 @@ export default function MoneyAppPage() {
         accountId: txAccountId,
         toAccountId: txType === 'transfer' ? txToAccountId : undefined,
         txDate: today,
-        createdAt: today,
+        createdAt: editingTx ? editingTx.createdAt : today,
       };
 
+      workingAccounts = applyTxEffectToAccounts(workingAccounts, updatedTxObj, 1);
+
       let updatedInstallments = prev.installments;
-      if (txType === 'expense' && isCreditOrBnpl && txIsInstallment) {
+      if (!editingTx && txType === 'expense' && isCreditOrBnpl && txIsInstallment) {
         const months = Math.max(2, parseInt(txInstallmentMonths, 10) || 6);
         const newInst = {
           id: `inst-${Date.now()}`,
@@ -533,7 +614,7 @@ export default function MoneyAppPage() {
           ownerEmail: currentUser.email,
           ownerName: currentUser.name,
           isSharedWithFamily: txShared,
-          title: `${newTx.note} (ผ่อน ${months} เดือน)`,
+          title: `${updatedTxObj.note} (ผ่อน ${months} เดือน)`,
           totalAmount: amount,
           totalMonths: months,
           paidMonths: 0,
@@ -545,24 +626,96 @@ export default function MoneyAppPage() {
         updatedInstallments = [newInst, ...prev.installments];
       }
 
+      const updatedTransactions = editingTx
+        ? prev.transactions.map((t) => (t.id === editingTx.id ? updatedTxObj : t))
+        : [updatedTxObj, ...prev.transactions];
+
       return {
         ...prev,
-        accounts: updatedAccounts,
+        accounts: workingAccounts,
         installments: updatedInstallments,
-        transactions: [newTx, ...prev.transactions],
+        transactions: updatedTransactions,
       };
     });
 
     setShowTxModal(false);
-    showToast('บันทึกรายการเรียบร้อยแล้ว');
+    setEditingTx(null);
+    showToast(editingTx ? 'แก้ไขรายการเรียบร้อยแล้ว' : 'บันทึกรายการเรียบร้อยแล้ว');
   };
 
-  // Add New Account or Credit Card / BNPL
-  const handleCreateAccount = (e) => {
+  const handleDeleteTransaction = (txToDelete) => {
+    updateState((prev) => ({
+      ...prev,
+      accounts: applyTxEffectToAccounts(prev.accounts, txToDelete, -1),
+      transactions: prev.transactions.filter((t) => t.id !== txToDelete.id),
+    }));
+    setShowTxModal(false);
+    setEditingTx(null);
+    showToast('ลบรายการและคืนยอดเงินเรียบร้อยแล้ว');
+  };
+
+  // ============================================================================
+  // ACCOUNTS & CREDIT CARDS: CREATE, EDIT, DELETE
+  // ============================================================================
+  const openCreateAccountModal = (defaultType = 'bank') => {
+    setEditingAccount(null);
+    setAccType(defaultType);
+    setAccName('');
+    setAccBalance('');
+    setAccCreditLimit('50000');
+    setAccUsedAmount('0');
+    setAccStatementDay('25');
+    setAccDueDay('10');
+    setAccColor(defaultType === 'credit_card' ? '#1e293b' : '#059669');
+    setAccShared(false);
+    setShowAccountModal(true);
+  };
+
+  const openEditAccountModal = (acc) => {
+    setEditingAccount(acc);
+    setAccType(acc.type);
+    setAccName(acc.name);
+    setAccBalance(String(acc.balance || 0));
+    setAccCreditLimit(String(acc.creditLimit || 50000));
+    setAccUsedAmount(String(acc.usedAmount || 0));
+    setAccStatementDay(String(acc.statementDay || 25));
+    setAccDueDay(String(acc.dueDay || 10));
+    setAccColor(acc.color || '#4f46e5');
+    setAccShared(Boolean(acc.isSharedWithFamily));
+    setShowAccountModal(true);
+  };
+
+  const handleSaveAccount = (e) => {
     e.preventDefault();
     if (!accName.trim()) return;
     const isLiability = ACCOUNT_TYPE_META[accType]?.isLiability;
     const today = new Date().toISOString().slice(0, 10);
+
+    if (editingAccount) {
+      updateState((prev) => ({
+        ...prev,
+        accounts: prev.accounts.map((a) =>
+          a.id === editingAccount.id
+            ? {
+                ...a,
+                name: accName.trim(),
+                type: accType,
+                balance: isLiability ? 0 : parseFloat(accBalance) || 0,
+                creditLimit: isLiability ? parseFloat(accCreditLimit) || 0 : 0,
+                usedAmount: isLiability ? parseFloat(accUsedAmount) || 0 : 0,
+                statementDay: parseInt(accStatementDay, 10) || 25,
+                dueDay: parseInt(accDueDay, 10) || 10,
+                color: accColor,
+                isSharedWithFamily: accShared,
+              }
+            : a
+        ),
+      }));
+      setShowAccountModal(false);
+      setEditingAccount(null);
+      showToast(`บันทึกการแก้ไข "${accName.trim()}" เรียบร้อยแล้ว`);
+      return;
+    }
 
     const newAcc = {
       id: `acc-${Date.now()}`,
@@ -590,6 +743,18 @@ export default function MoneyAppPage() {
     setAccBalance('');
     setShowAccountModal(false);
     showToast(`สร้าง "${newAcc.name}" เรียบร้อยแล้ว`);
+  };
+
+  const handleDeleteAccount = (accToDelete) => {
+    updateState((prev) => ({
+      ...prev,
+      accounts: prev.accounts.filter((a) => a.id !== accToDelete.id),
+      installments: prev.installments.filter((i) => i.accountId !== accToDelete.id),
+      transactions: prev.transactions.filter((t) => t.accountId !== accToDelete.id),
+    }));
+    setShowAccountModal(false);
+    setEditingAccount(null);
+    showToast(`ลบบัญชี "${accToDelete.name}" เรียบร้อยแล้ว`);
   };
 
   // Pay Credit Card / BNPL Bill
@@ -639,32 +804,82 @@ export default function MoneyAppPage() {
     showToast(`จ่ายบิล ${cardAcc.name} จำนวน ${formatTHB(amount)} สำเร็จ!`);
   };
 
-  // Add Standalone Installment Plan
-  const handleCreateInstallment = (e) => {
+  // ============================================================================
+  // INSTALLMENTS: CREATE, EDIT, DELETE
+  // ============================================================================
+  const openCreateInstallmentModal = () => {
+    setEditingInstallment(null);
+    setInstTitle('');
+    setInstAccountId(creditAccounts[0]?.id || '');
+    setInstTotalAmount('');
+    setInstMonths('10');
+    setInstPaidMonths('0');
+    setInstShared(false);
+    setShowInstallmentModal(true);
+  };
+
+  const openEditInstallmentModal = (inst) => {
+    setEditingInstallment(inst);
+    setInstTitle(inst.title);
+    setInstAccountId(inst.accountId);
+    setInstTotalAmount(String(inst.totalAmount));
+    setInstMonths(String(inst.totalMonths));
+    setInstPaidMonths(String(inst.paidMonths || 0));
+    setInstShared(Boolean(inst.isSharedWithFamily));
+    setShowInstallmentModal(true);
+  };
+
+  const handleSaveInstallment = (e) => {
     e.preventDefault();
     const total = parseFloat(instTotalAmount);
-    const months = parseInt(instMonths, 10) || 10;
-    if (!instTitle.trim() || !total || total <= 0 || !instAccountId) return;
+    const months = Math.max(1, parseInt(instMonths, 10) || 10);
+    const paid = Math.min(months, Math.max(0, parseInt(instPaidMonths, 10) || 0));
+    const targetAccId = instAccountId || creditAccounts[0]?.id;
+    if (!instTitle.trim() || !total || total <= 0 || !targetAccId) return;
 
     const today = new Date().toISOString().slice(0, 10);
     const monthly = Math.round((total / months) * 100) / 100;
 
+    if (editingInstallment) {
+      updateState((prev) => ({
+        ...prev,
+        installments: prev.installments.map((item) =>
+          item.id === editingInstallment.id
+            ? {
+                ...item,
+                title: instTitle.trim(),
+                accountId: targetAccId,
+                totalAmount: total,
+                totalMonths: months,
+                paidMonths: paid,
+                monthlyAmount: monthly,
+                isSharedWithFamily: instShared,
+              }
+            : item
+        ),
+      }));
+      setShowInstallmentModal(false);
+      setEditingInstallment(null);
+      showToast('บันทึกการแก้ไขรายการผ่อนชำระแล้ว');
+      return;
+    }
+
     updateState((prev) => ({
       ...prev,
       accounts: prev.accounts.map((a) =>
-        a.id === instAccountId ? { ...a, usedAmount: Number(a.usedAmount) + total } : a
+        a.id === targetAccId ? { ...a, usedAmount: Number(a.usedAmount) + total } : a
       ),
       installments: [
         {
           id: `inst-${Date.now()}`,
-          accountId: instAccountId,
+          accountId: targetAccId,
           ownerEmail: currentUser.email,
           ownerName: currentUser.name,
           isSharedWithFamily: instShared,
           title: instTitle.trim(),
           totalAmount: total,
           totalMonths: months,
-          paidMonths: 0,
+          paidMonths: paid,
           monthlyAmount: monthly,
           interestRate: 0,
           startDate: today,
@@ -680,7 +895,16 @@ export default function MoneyAppPage() {
     showToast('เพิ่มแผนผ่อนชำระเรียบร้อยแล้ว');
   };
 
-  // Pay 1 Installment Month
+  const handleDeleteInstallment = (instToDelete) => {
+    updateState((prev) => ({
+      ...prev,
+      installments: prev.installments.filter((i) => i.id !== instToDelete.id),
+    }));
+    setShowInstallmentModal(false);
+    setEditingInstallment(null);
+    showToast('ลบรายการผ่อนชำระแล้ว');
+  };
+
   const handleAdvanceInstallmentMonth = (inst) => {
     if (inst.paidMonths >= inst.totalMonths) return;
     updateState((prev) => ({
@@ -692,13 +916,69 @@ export default function MoneyAppPage() {
     showToast(`บันทึกจ่ายงวดที่ ${inst.paidMonths + 1}/${inst.totalMonths} ของ "${inst.title}" แล้ว`);
   };
 
-  // Create Loan (Lend or Borrow)
-  const handleCreateLoan = (e) => {
+  // ============================================================================
+  // LOANS: CREATE, EDIT, DELETE, REPAY
+  // ============================================================================
+  const openCreateLoanModal = () => {
+    setEditingLoan(null);
+    setLoanType('lend');
+    setLoanPerson('');
+    setLoanAmount('');
+    setLoanPaidAmount('0');
+    setLoanAccountId(assetAccounts[0]?.id || '');
+    setLoanDueDate(new Date().toISOString().slice(0, 10));
+    setLoanNote('');
+    setLoanShared(false);
+    setShowLoanModal(true);
+  };
+
+  const openEditLoanModal = (loan) => {
+    setEditingLoan(loan);
+    setLoanType(loan.loanType);
+    setLoanPerson(loan.personName);
+    setLoanAmount(String(loan.totalAmount));
+    setLoanPaidAmount(String(loan.paidAmount || 0));
+    setLoanAccountId(loan.accountId || assetAccounts[0]?.id || '');
+    setLoanDueDate(loan.dueDate || new Date().toISOString().slice(0, 10));
+    setLoanNote(loan.note || '');
+    setLoanShared(Boolean(loan.isSharedWithFamily));
+    setShowLoanModal(true);
+  };
+
+  const handleSaveLoan = (e) => {
     e.preventDefault();
     const amount = parseFloat(loanAmount);
-    if (!loanPerson.trim() || !amount || amount <= 0 || !loanAccountId) return;
+    const paid = Math.min(amount, Math.max(0, parseFloat(loanPaidAmount) || 0));
+    if (!loanPerson.trim() || !amount || amount <= 0) return;
 
     const today = new Date().toISOString().slice(0, 10);
+
+    if (editingLoan) {
+      updateState((prev) => ({
+        ...prev,
+        loans: prev.loans.map((l) =>
+          l.id === editingLoan.id
+            ? {
+                ...l,
+                loanType,
+                personName: loanPerson.trim(),
+                totalAmount: amount,
+                paidAmount: paid,
+                accountId: loanAccountId,
+                dueDate: loanDueDate || today,
+                note: loanNote.trim(),
+                isSharedWithFamily: loanShared,
+                status: paid >= amount ? 'settled' : 'active',
+              }
+            : l
+        ),
+      }));
+      setShowLoanModal(false);
+      setEditingLoan(null);
+      showToast(`บันทึกการแก้ไขรายการของ "${loanPerson.trim()}" แล้ว`);
+      return;
+    }
+
     const newLoan = {
       id: `loan-${Date.now()}`,
       ownerEmail: currentUser.email,
@@ -707,11 +987,11 @@ export default function MoneyAppPage() {
       loanType,
       personName: loanPerson.trim(),
       totalAmount: amount,
-      paidAmount: 0,
+      paidAmount: paid,
       accountId: loanAccountId,
       dueDate: loanDueDate || today,
       note: loanNote.trim() || (loanType === 'lend' ? 'ให้ยืมเงิน' : 'ยืมเงินมา'),
-      status: 'active',
+      status: paid >= amount ? 'settled' : 'active',
       repayments: [],
       createdAt: today,
     };
@@ -742,7 +1022,16 @@ export default function MoneyAppPage() {
     );
   };
 
-  // Record Loan Repayment
+  const handleDeleteLoan = (loanToDelete) => {
+    updateState((prev) => ({
+      ...prev,
+      loans: prev.loans.filter((l) => l.id !== loanToDelete.id),
+    }));
+    setShowLoanModal(false);
+    setEditingLoan(null);
+    showToast(`ลบรายการของ "${loanToDelete.personName}" แล้ว`);
+  };
+
   const handleRecordLoanRepayment = (e) => {
     e.preventDefault();
     if (!showRepayLoanModal || !repayAccountId) return;
@@ -799,7 +1088,6 @@ export default function MoneyAppPage() {
     );
   };
 
-  // Copy Loan Summary for LINE
   const handleCopyLoanLineMessage = (loan) => {
     const remaining = Math.max(0, Number(loan.totalAmount) - Number(loan.paidAmount));
     const text =
@@ -813,7 +1101,6 @@ export default function MoneyAppPage() {
     }
   };
 
-  // Toggle Account Sharing with Family
   const handleToggleAccountShare = (accountId) => {
     updateState((prev) => ({
       ...prev,
@@ -824,7 +1111,6 @@ export default function MoneyAppPage() {
     showToast('อัปเดตสถานะการแชร์บัญชีกับคนในบ้านแล้ว');
   };
 
-  // Create New Family House
   const handleCreateFamilyGroup = (e) => {
     e.preventDefault();
     const houseName = (newFamilyName || `บ้านของ ${currentUser.name}`).trim();
@@ -854,7 +1140,6 @@ export default function MoneyAppPage() {
     showToast(`สร้างบ้าน "${houseName}" รหัส ${randomCode} สำเร็จ!`);
   };
 
-  // Invite Family Member by Gmail
   const handleInviteFamilyEmail = (e) => {
     e.preventDefault();
     const email = inviteEmailInput.trim().toLowerCase();
@@ -872,7 +1157,19 @@ export default function MoneyAppPage() {
     showToast(`เพิ่ม ${email} เข้าสู่บ้าน "${currentFamily.name}" แล้ว`);
   };
 
-  // Join Family House by Invite Code
+  const handleRemoveFamilyMember = (emailToRemove) => {
+    if (!currentFamily) return;
+    updateState((prev) => ({
+      ...prev,
+      familyGroups: prev.familyGroups.map((fg) =>
+        fg.id === currentFamily.id
+          ? { ...fg, memberEmails: fg.memberEmails.filter((em) => em !== emailToRemove) }
+          : fg
+      ),
+    }));
+    showToast(`นำ ${emailToRemove} ออกจากบ้านแล้ว`);
+  };
+
   const handleJoinFamilyByCode = (e) => {
     e.preventDefault();
     const code = joinCodeInput.trim().toUpperCase();
@@ -902,7 +1199,6 @@ export default function MoneyAppPage() {
     showToast(`เข้าร่วม "${found.name}" สำเร็จ!`);
   };
 
-  // Export CSV for Desktop Reporting
   const handleExportCSV = () => {
     const headers = ['วันที่', 'ประเภท', 'หมวดหมู่', 'รายการ', 'จำนวนเงิน', 'ผู้บันทึก', 'แชร์ในบ้าน'];
     const rows = visibleTransactions.map((t) => [
@@ -939,7 +1235,7 @@ export default function MoneyAppPage() {
   }
 
   // ============================================================================
-  // 1. CLEAN GOOGLE SIGN-IN SCREEN (ไม่มีชื่อค้าง! Gmail ใคร Gmail มัน)
+  // 1. CLEAN GOOGLE SIGN-IN SCREEN
   // ============================================================================
   if (!currentUser) {
     return (
@@ -1021,7 +1317,6 @@ export default function MoneyAppPage() {
                   transition: 'all 0.15s ease',
                 }}
               >
-                {/* Official 4-color Google G SVG */}
                 <svg width="22" height="22" viewBox="0 0 48 48">
                   <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
                   <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
@@ -1097,7 +1392,7 @@ export default function MoneyAppPage() {
   }
 
   // ============================================================================
-  // 2. LOGGED-IN APP SHELL (Responsive Mobile + Desktop)
+  // 2. LOGGED-IN APP SHELL
   // ============================================================================
   return (
     <div className="app-shell">
@@ -1206,8 +1501,22 @@ export default function MoneyAppPage() {
             marginTop: 'auto',
           }}
         >
-          <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginBottom: 4 }}>
-            บัญชี Google ปัจจุบัน:
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+            <span style={{ fontSize: '0.72rem', color: '#94a3b8' }}>บัญชี Google ปัจจุบัน:</span>
+            <button
+              type="button"
+              onClick={openEditProfileModal}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#a5b4fc',
+                fontSize: '0.75rem',
+                cursor: 'pointer',
+                fontWeight: 600,
+              }}
+            >
+              ✏️ แก้ไขชื่อ
+            </button>
           </div>
           <div style={{ fontWeight: 700, fontSize: '0.92rem', color: '#fff' }}>
             {currentUser.name}
@@ -1238,10 +1547,21 @@ export default function MoneyAppPage() {
               {viewMode === 'family' ? '🏠' : '👤'}
             </span>
             <div>
-              <div style={{ fontWeight: 800, fontSize: '1.02rem' }}>
-                {viewMode === 'family'
-                  ? currentFamily?.name || 'มุมมองคนในบ้าน'
-                  : `กระเป๋าของ ${currentUser.name}`}
+              <div style={{ fontWeight: 800, fontSize: '1.02rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>
+                  {viewMode === 'family'
+                    ? currentFamily?.name || 'มุมมองคนในบ้าน'
+                    : `กระเป๋าของ ${currentUser.name}`}
+                </span>
+                <button
+                  type="button"
+                  onClick={openEditProfileModal}
+                  className="btn btn-ghost btn-sm"
+                  style={{ padding: '2px 6px', fontSize: '0.76rem' }}
+                  title="แก้ไขชื่อ"
+                >
+                  ✏️
+                </button>
               </div>
               <div style={{ fontSize: '0.76rem', color: '#64748b' }}>
                 {viewMode === 'family'
@@ -1291,7 +1611,7 @@ export default function MoneyAppPage() {
 
         <main className="content-container">
           {/* ================================================================= */}
-          {/* TAB 1: DASHBOARD (ภาพรวม) */}
+          {/* TAB 1: DASHBOARD */}
           {/* ================================================================= */}
           {activeTab === 'dashboard' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
@@ -1326,7 +1646,7 @@ export default function MoneyAppPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setShowAccountModal(true)}
+                      onClick={() => openCreateAccountModal('bank')}
                       className="btn btn-sm"
                       style={{ background: 'rgba(255,255,255,0.16)', color: '#fff' }}
                     >
@@ -1369,14 +1689,11 @@ export default function MoneyAppPage() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
                     <div>
                       <h2 style={{ fontSize: '1.05rem', fontWeight: 800 }}>🏦 บัญชีเงินสด & ธนาคาร</h2>
-                      <p style={{ fontSize: '0.8rem', color: '#64748b' }}>เงินพร้อมใช้ทั้งหมด</p>
+                      <p style={{ fontSize: '0.8rem', color: '#64748b' }}>กด ✏️ เพื่อแก้ไขชื่อหรือยอดเงินได้ทุกบัญชี</p>
                     </div>
                     <button
                       type="button"
-                      onClick={() => {
-                        setAccType('bank');
-                        setShowAccountModal(true);
-                      }}
+                      onClick={() => openCreateAccountModal('bank')}
                       className="btn btn-outline btn-sm"
                     >
                       ＋ เพิ่มบัญชี
@@ -1414,7 +1731,7 @@ export default function MoneyAppPage() {
                             {ACCOUNT_TYPE_META[acc.type]?.icon || '🏦'}
                           </div>
                           <div>
-                            <div style={{ fontWeight: 700, fontSize: '0.94rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <div style={{ fontWeight: 700, fontSize: '0.94rem', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                               {acc.name}
                               {acc.isSharedWithFamily ? (
                                 <span className="badge badge-pink">🏠 แชร์กับบ้าน</span>
@@ -1427,10 +1744,19 @@ export default function MoneyAppPage() {
                             </div>
                           </div>
                         </div>
-                        <div style={{ textAlign: 'right' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                           <div style={{ fontWeight: 800, fontSize: '1.02rem', color: '#059669' }}>
                             {formatTHB(acc.balance)}
                           </div>
+                          <button
+                            type="button"
+                            onClick={() => openEditAccountModal(acc)}
+                            className="btn btn-outline btn-sm"
+                            style={{ padding: '4px 8px' }}
+                            title="แก้ไขบัญชี"
+                          >
+                            ✏️
+                          </button>
                         </div>
                       </div>
                     ))}
@@ -1442,14 +1768,11 @@ export default function MoneyAppPage() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
                     <div>
                       <h2 style={{ fontSize: '1.05rem', fontWeight: 800 }}>💳 บัตรเครดิต & ใช้ก่อนจ่ายทีหลัง</h2>
-                      <p style={{ fontSize: '0.8rem', color: '#64748b' }}>เช็กยอดรูด วงเงินคงเหลือ และจ่ายบิล</p>
+                      <p style={{ fontSize: '0.8rem', color: '#64748b' }}>เช็กยอดรูด วงเงินคงเหลือ แก้ไขข้อมูล และจ่ายบิล</p>
                     </div>
                     <button
                       type="button"
-                      onClick={() => {
-                        setAccType('credit_card');
-                        setShowAccountModal(true);
-                      }}
+                      onClick={() => openCreateAccountModal('credit_card')}
                       className="btn btn-outline btn-sm"
                     >
                       ＋ เพิ่มบัตร/PayLater
@@ -1478,9 +1801,9 @@ export default function MoneyAppPage() {
                               background: '#fff',
                             }}
                           >
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8, gap: 8 }}>
                               <div>
-                                <div style={{ fontWeight: 700, fontSize: '0.95rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <div style={{ fontWeight: 700, fontSize: '0.95rem', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                                   <span>{ACCOUNT_TYPE_META[card.type]?.icon}</span>
                                   {card.name}
                                   {card.isSharedWithFamily && (
@@ -1491,17 +1814,28 @@ export default function MoneyAppPage() {
                                   สรุปยอดวันที่ {card.statementDay} • จ่ายวันที่ {card.dueDay} • {card.ownerName}
                                 </div>
                               </div>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setShowPayCardModal(card);
-                                  setPayCardAmount(String(card.usedAmount));
-                                  setPayCardFromAccId(assetAccounts[0]?.id || '');
-                                }}
-                                className="btn btn-primary btn-sm"
-                              >
-                                จ่ายบิลบัตร
-                              </button>
+                              <div style={{ display: 'flex', gap: 6 }}>
+                                <button
+                                  type="button"
+                                  onClick={() => openEditAccountModal(card)}
+                                  className="btn btn-outline btn-sm"
+                                  style={{ padding: '4px 8px' }}
+                                  title="แก้ไขบัตร"
+                                >
+                                  ✏️
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowPayCardModal(card);
+                                    setPayCardAmount(String(card.usedAmount));
+                                    setPayCardFromAccId(assetAccounts[0]?.id || '');
+                                  }}
+                                  className="btn btn-primary btn-sm"
+                                >
+                                  จ่ายบิลบัตร
+                                </button>
+                              </div>
                             </div>
 
                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: 6 }}>
@@ -1535,7 +1869,7 @@ export default function MoneyAppPage() {
                   <div>
                     <h2 style={{ fontSize: '1.05rem', fontWeight: 800 }}>📝 รายการเคลื่อนไหวล่าสุด</h2>
                     <p style={{ fontSize: '0.8rem', color: '#64748b' }}>
-                      รวมรายการรับ-จ่าย, รูดบัตรเครดิต และโอนจ่ายบิล
+                      กดปุ่ม ✏️ ท้ายรายการเพื่อแก้ไขชื่อ ยอดเงิน หมวดหมู่ หรือลบรายการได้ตลอดเวลา
                     </p>
                   </div>
                   <button
@@ -1553,7 +1887,7 @@ export default function MoneyAppPage() {
                   </div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {visibleTransactions.slice(0, 12).map((tx) => {
+                    {visibleTransactions.slice(0, 20).map((tx) => {
                       const allCats = [...EXPENSE_CATEGORIES, ...INCOME_CATEGORIES];
                       const cat = allCats.find((c) => c.id === tx.category) || {
                         icon: tx.type === 'card_payment' ? '💳' : '🔄',
@@ -1571,6 +1905,7 @@ export default function MoneyAppPage() {
                             borderRadius: 14,
                             border: '1px solid #f1f5f9',
                             background: '#f8fafc',
+                            gap: 10,
                           }}
                         >
                           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -1585,6 +1920,7 @@ export default function MoneyAppPage() {
                                 alignItems: 'center',
                                 justifyContent: 'center',
                                 fontSize: '1.25rem',
+                                flexShrink: 0,
                               }}
                             >
                               {cat.icon}
@@ -1602,20 +1938,31 @@ export default function MoneyAppPage() {
                             </div>
                           </div>
 
-                          <div
-                            style={{
-                              fontWeight: 800,
-                              fontSize: '1rem',
-                              color:
-                                tx.type === 'income'
-                                  ? '#059669'
-                                  : tx.type === 'card_payment' || tx.type === 'transfer'
-                                  ? '#4f46e5'
-                                  : '#dc2626',
-                            }}
-                          >
-                            {tx.type === 'income' ? '+' : tx.type === 'expense' ? '-' : ''}
-                            {formatTHB(tx.amount)}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <div
+                              style={{
+                                fontWeight: 800,
+                                fontSize: '1rem',
+                                color:
+                                  tx.type === 'income'
+                                    ? '#059669'
+                                    : tx.type === 'card_payment' || tx.type === 'transfer'
+                                    ? '#4f46e5'
+                                    : '#dc2626',
+                              }}
+                            >
+                              {tx.type === 'income' ? '+' : tx.type === 'expense' ? '-' : ''}
+                              {formatTHB(tx.amount)}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => openEditTransactionModal(tx)}
+                              className="btn btn-outline btn-sm"
+                              style={{ padding: '4px 8px' }}
+                              title="แก้ไขหรือลบรายการนี้"
+                            >
+                              ✏️
+                            </button>
                           </div>
                         </div>
                       );
@@ -1637,20 +1984,20 @@ export default function MoneyAppPage() {
                     💳 จัดการบัญชีธนาคาร, บัตรเครดิต & ใช้ก่อนจ่ายทีหลัง
                   </h1>
                   <p style={{ fontSize: '0.86rem', color: '#64748b' }}>
-                    แยกกระเป๋าสินทรัพย์และวงเงินบัตรเครดิตชัดเจน พร้อมระบบตัดจ่ายบิลและผ่อนสินค้า
+                    กด ✏️ บนการ์ดเพื่อแก้ไขชื่อบัญชี วงเงิน วันสรุปยอด ยอดคงเหลือ หรือลบบัญชีได้ทันที
                   </p>
                 </div>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button
                     type="button"
-                    onClick={() => setShowInstallmentModal(true)}
+                    onClick={openCreateInstallmentModal}
                     className="btn btn-outline"
                   >
                     📅 + เพิ่มรายการผ่อนสินค้า
                   </button>
                   <button
                     type="button"
-                    onClick={() => setShowAccountModal(true)}
+                    onClick={() => openCreateAccountModal('bank')}
                     className="btn btn-primary"
                   >
                     ＋ เพิ่มบัญชี / บัตรเครดิต
@@ -1683,23 +2030,38 @@ export default function MoneyAppPage() {
                           }}
                         >
                           <div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
                               <span className="badge" style={{ background: 'rgba(255,255,255,0.2)', color: '#fff' }}>
                                 {ACCOUNT_TYPE_META[card.type]?.badge}
                               </span>
-                              <button
-                                type="button"
-                                onClick={() => handleToggleAccountShare(card.id)}
-                                className="badge"
-                                style={{
-                                  background: card.isSharedWithFamily ? '#ec4899' : 'rgba(255,255,255,0.15)',
-                                  color: '#fff',
-                                  border: 'none',
-                                  cursor: 'pointer',
-                                }}
-                              >
-                                {card.isSharedWithFamily ? '🏠 แชร์กับบ้าน' : '🔒 ส่วนตัว (กดเพื่อแชร์)'}
-                              </button>
+                              <div style={{ display: 'flex', gap: 6 }}>
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleAccountShare(card.id)}
+                                  className="badge"
+                                  style={{
+                                    background: card.isSharedWithFamily ? '#ec4899' : 'rgba(255,255,255,0.15)',
+                                    color: '#fff',
+                                    border: 'none',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  {card.isSharedWithFamily ? '🏠 แชร์บ้าน' : '🔒 ส่วนตัว'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => openEditAccountModal(card)}
+                                  className="badge"
+                                  style={{
+                                    background: 'rgba(255,255,255,0.22)',
+                                    color: '#fff',
+                                    border: 'none',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  ✏️ แก้ไข
+                                </button>
+                              </div>
                             </div>
                             <div style={{ fontSize: '1.15rem', fontWeight: 800, marginTop: 12 }}>
                               {card.name}
@@ -1756,12 +2118,12 @@ export default function MoneyAppPage() {
                       📅 รายการผ่อนชำระรายเดือน (Installment Plans)
                     </h2>
                     <p style={{ fontSize: '0.8rem', color: '#64748b' }}>
-                      ติดตามยอดผ่อน 0% หรือผ่อนของผ่านบัตรเครดิต/PayLater ว่าจ่ายไปกี่งวดแล้ว
+                      ติดตามยอดผ่อน 0% หรือผ่อนของผ่านบัตรเครดิต/PayLater กด ✏️ เพื่อแก้ไขได้ทุกรายการ
                     </p>
                   </div>
                   <button
                     type="button"
-                    onClick={() => setShowInstallmentModal(true)}
+                    onClick={openCreateInstallmentModal}
                     className="btn btn-outline btn-sm"
                   >
                     ＋ เพิ่มรายการผ่อน
@@ -1788,7 +2150,7 @@ export default function MoneyAppPage() {
                             background: '#f8fafc',
                           }}
                         >
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8, gap: 8 }}>
                             <div>
                               <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>{inst.title}</div>
                               <div style={{ fontSize: '0.78rem', color: '#64748b' }}>
@@ -1796,9 +2158,19 @@ export default function MoneyAppPage() {
                                 <strong style={{ color: '#4f46e5' }}>{formatTHB(inst.monthlyAmount)}</strong>
                               </div>
                             </div>
-                            <span className="badge badge-indigo">
-                              งวด {inst.paidMonths}/{inst.totalMonths}
-                            </span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <span className="badge badge-indigo">
+                                งวด {inst.paidMonths}/{inst.totalMonths}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => openEditInstallmentModal(inst)}
+                                className="btn btn-outline btn-sm"
+                                style={{ padding: '3px 8px' }}
+                              >
+                                ✏️
+                              </button>
+                            </div>
                           </div>
                           <div className="progress-track" style={{ marginBottom: 10 }}>
                             <div
@@ -1851,14 +2223,24 @@ export default function MoneyAppPage() {
                         <span className="badge badge-emerald">
                           {ACCOUNT_TYPE_META[acc.type]?.icon} {ACCOUNT_TYPE_META[acc.type]?.badge}
                         </span>
-                        <button
-                          type="button"
-                          onClick={() => handleToggleAccountShare(acc.id)}
-                          className={`badge ${acc.isSharedWithFamily ? 'badge-pink' : 'badge-slate'}`}
-                          style={{ border: 'none', cursor: 'pointer' }}
-                        >
-                          {acc.isSharedWithFamily ? '🏠 แชร์กับบ้าน' : '🔒 ส่วนตัว'}
-                        </button>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleAccountShare(acc.id)}
+                            className={`badge ${acc.isSharedWithFamily ? 'badge-pink' : 'badge-slate'}`}
+                            style={{ border: 'none', cursor: 'pointer' }}
+                          >
+                            {acc.isSharedWithFamily ? '🏠 แชร์บ้าน' : '🔒 ส่วนตัว'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openEditAccountModal(acc)}
+                            className="badge badge-indigo"
+                            style={{ border: 'none', cursor: 'pointer' }}
+                          >
+                            ✏️ แก้ไข
+                          </button>
+                        </div>
                       </div>
                       <div>
                         <div style={{ fontWeight: 700, fontSize: '1rem' }}>{acc.name}</div>
@@ -1885,15 +2267,12 @@ export default function MoneyAppPage() {
                     🤝 ระบบติดตามการยืมเงิน & ให้คนอื่นยืมเงิน
                   </h1>
                   <p style={{ fontSize: '0.86rem', color: '#64748b' }}>
-                    แยกยอดลูกหนี้/เจ้าหนี้ออกจากค่าใช้จ่ายปกติ รองรับการทยอยคืนเงินและคัดลอกข้อความทวงถามทาง LINE
+                    กด ✏️ เพื่อแก้ไขชื่อผู้ยืม ยอดเงิน วันนัดคืน หรือลบรายการได้ตลอดเวลา
                   </p>
                 </div>
                 <button
                   type="button"
-                  onClick={() => {
-                    setLoanAccountId(assetAccounts[0]?.id || '');
-                    setShowLoanModal(true);
-                  }}
+                  onClick={openCreateLoanModal}
                   className="btn btn-primary"
                 >
                   ＋ สร้างรายการยืม / ให้ยืม
@@ -1936,9 +2315,9 @@ export default function MoneyAppPage() {
                                 background: loan.status === 'settled' ? '#f8fafc' : '#ecfdf5',
                               }}
                             >
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8, gap: 8 }}>
                                 <div>
-                                  <div style={{ fontWeight: 800, fontSize: '1rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <div style={{ fontWeight: 800, fontSize: '1rem', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                                     👤 {loan.personName}
                                     {loan.status === 'settled' ? (
                                       <span className="badge badge-emerald">✅ คืนครบแล้ว</span>
@@ -1950,13 +2329,21 @@ export default function MoneyAppPage() {
                                     {loan.note} • นัดคืน: {loan.dueDate || '-'}
                                   </div>
                                 </div>
-                                <div style={{ display: 'flex', gap: 6 }}>
+                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                  <button
+                                    type="button"
+                                    onClick={() => openEditLoanModal(loan)}
+                                    className="btn btn-outline btn-sm"
+                                    style={{ padding: '4px 8px' }}
+                                  >
+                                    ✏️
+                                  </button>
                                   <button
                                     type="button"
                                     onClick={() => handleCopyLoanLineMessage(loan)}
                                     className="btn btn-outline btn-sm"
                                   >
-                                    📋 ส่ง LINE
+                                    📋 LINE
                                   </button>
                                   {loan.status === 'active' && (
                                     <button
@@ -2026,9 +2413,9 @@ export default function MoneyAppPage() {
                                 background: loan.status === 'settled' ? '#f8fafc' : '#fffbeb',
                               }}
                             >
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8, gap: 8 }}>
                                 <div>
-                                  <div style={{ fontWeight: 800, fontSize: '1rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <div style={{ fontWeight: 800, fontSize: '1rem', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                                     👤 {loan.personName}
                                     {loan.status === 'settled' ? (
                                       <span className="badge badge-emerald">✅ จ่ายคืนครบแล้ว</span>
@@ -2040,19 +2427,29 @@ export default function MoneyAppPage() {
                                     {loan.note} • กำหนดคืน: {loan.dueDate || '-'}
                                   </div>
                                 </div>
-                                {loan.status === 'active' && (
+                                <div style={{ display: 'flex', gap: 6 }}>
                                   <button
                                     type="button"
-                                    onClick={() => {
-                                      setShowRepayLoanModal(loan);
-                                      setRepayAmount(String(remaining));
-                                      setRepayAccountId(assetAccounts[0]?.id || loan.accountId);
-                                    }}
-                                    className="btn btn-primary btn-sm"
+                                    onClick={() => openEditLoanModal(loan)}
+                                    className="btn btn-outline btn-sm"
+                                    style={{ padding: '4px 8px' }}
                                   >
-                                    โอนจ่ายคืน
+                                    ✏️
                                   </button>
-                                )}
+                                  {loan.status === 'active' && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setShowRepayLoanModal(loan);
+                                        setRepayAmount(String(remaining));
+                                        setRepayAccountId(assetAccounts[0]?.id || loan.accountId);
+                                      }}
+                                      className="btn btn-primary btn-sm"
+                                    >
+                                      โอนจ่ายคืน
+                                    </button>
+                                  )}
+                                </div>
                               </div>
 
                               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: 6 }}>
@@ -2167,7 +2564,7 @@ export default function MoneyAppPage() {
           )}
 
           {/* ================================================================= */}
-          {/* TAB 5: FAMILY SHARING (แชร์ให้เห็นยอดรวมกับคนในบ้าน) */}
+          {/* TAB 5: FAMILY SHARING */}
           {/* ================================================================= */}
           {activeTab === 'family' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
@@ -2225,9 +2622,18 @@ export default function MoneyAppPage() {
                     </div>
                   ) : (
                     <>
-                      <h2 style={{ fontSize: '1.05rem', fontWeight: 800, marginBottom: 10 }}>
-                        👨‍👩‍👧‍👦 บ้านของคุณ: {currentFamily.name}
-                      </h2>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                        <h2 style={{ fontSize: '1.05rem', fontWeight: 800 }}>
+                          👨‍👩‍👧‍👦 บ้านของคุณ: {currentFamily.name}
+                        </h2>
+                        <button
+                          type="button"
+                          onClick={openEditProfileModal}
+                          className="btn btn-outline btn-sm"
+                        >
+                          ✏️ แก้ไขชื่อบ้าน
+                        </button>
+                      </div>
                       <div
                         style={{
                           padding: 14,
@@ -2281,8 +2687,17 @@ export default function MoneyAppPage() {
                               }}
                             >
                               <span>{email}</span>
-                              {email === currentUser.email && (
+                              {email === currentUser.email ? (
                                 <span className="badge badge-indigo">คุณ</span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveFamilyMember(email)}
+                                  className="btn btn-outline btn-sm"
+                                  style={{ padding: '2px 8px', color: '#dc2626' }}
+                                >
+                                  ลบออก
+                                </button>
                               )}
                             </div>
                           ))}
@@ -2314,10 +2729,10 @@ export default function MoneyAppPage() {
                 {/* Privacy Toggle for My Accounts */}
                 <div className="card">
                   <h2 style={{ fontSize: '1.05rem', fontWeight: 800, marginBottom: 6 }}>
-                    🔒 ตั้งค่าการแชร์บัญชีของฉัน ({currentUser.email})
+                    🔒 ตั้งค่าและแก้ไขบัญชีของฉัน ({currentUser.email})
                   </h2>
                   <p style={{ fontSize: '0.8rem', color: '#64748b', marginBottom: 14 }}>
-                    เลือกเปิด <strong>&ldquo;🏠 แชร์กับบ้าน&rdquo;</strong> เฉพาะบัญชีหรือบัตรเครดิตที่ต้องการให้นำไปคิดยอดรวมกับคนในบ้าน
+                    เลือกเปิด <strong>&ldquo;🏠 แชร์กับบ้าน&rdquo;</strong> หรือกด <strong>✏️ แก้ไข</strong> เพื่อเปลี่ยนชื่อบัญชีและยอดเงิน
                   </p>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -2333,6 +2748,7 @@ export default function MoneyAppPage() {
                             padding: '12px 14px',
                             borderRadius: 12,
                             border: '1px solid #e2e8f0',
+                            gap: 8,
                           }}
                         >
                           <div>
@@ -2345,15 +2761,24 @@ export default function MoneyAppPage() {
                                 : `คงเหลือ: ${formatTHB(acc.balance)}`}
                             </div>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => handleToggleAccountShare(acc.id)}
-                            className={`btn btn-sm ${
-                              acc.isSharedWithFamily ? 'btn-primary' : 'btn-outline'
-                            }`}
-                          >
-                            {acc.isSharedWithFamily ? '🏠 แชร์กับบ้านอยู่' : '🔒 ส่วนตัว (กดเพื่อแชร์)'}
-                          </button>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button
+                              type="button"
+                              onClick={() => openEditAccountModal(acc)}
+                              className="btn btn-outline btn-sm"
+                            >
+                              ✏️ แก้ไข
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleAccountShare(acc.id)}
+                              className={`btn btn-sm ${
+                                acc.isSharedWithFamily ? 'btn-primary' : 'btn-outline'
+                              }`}
+                            >
+                              {acc.isSharedWithFamily ? '🏠 แชร์อยู่' : '🔒 ส่วนตัว'}
+                            </button>
+                          </div>
                         </div>
                       ))}
                   </div>
@@ -2409,13 +2834,15 @@ export default function MoneyAppPage() {
       </nav>
 
       {/* ===================================================================== */}
-      {/* MODAL 1: บันทึกรายรับ / รายจ่าย / รูดบัตรเครดิต / โอนเงิน */}
+      {/* MODAL 1: เพิ่ม / แก้ไข รายรับ-รายจ่าย-โอนเงิน */}
       {/* ===================================================================== */}
       {showTxModal && (
         <div className="modal-backdrop" onClick={() => setShowTxModal(false)}>
           <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h3 style={{ fontSize: '1.15rem', fontWeight: 800 }}>📝 บันทึกรายการใหม่</h3>
+              <h3 style={{ fontSize: '1.15rem', fontWeight: 800 }}>
+                {editingTx ? '✏️ แก้ไขรายการ' : '📝 บันทึกรายการใหม่'}
+              </h3>
               <button type="button" onClick={() => setShowTxModal(false)} className="btn btn-ghost btn-sm">
                 ✕
               </button>
@@ -2428,7 +2855,7 @@ export default function MoneyAppPage() {
                 style={{ flex: 1, justifyContent: 'center' }}
                 onClick={() => {
                   setTxType('expense');
-                  setTxCategory('food');
+                  if (!editingTx) setTxCategory('food');
                 }}
               >
                 💸 รายจ่าย / รูดบัตร
@@ -2439,7 +2866,7 @@ export default function MoneyAppPage() {
                 style={{ flex: 1, justifyContent: 'center' }}
                 onClick={() => {
                   setTxType('income');
-                  setTxCategory('salary');
+                  if (!editingTx) setTxCategory('salary');
                 }}
               >
                 💰 รายรับ
@@ -2454,7 +2881,7 @@ export default function MoneyAppPage() {
               </button>
             </div>
 
-            <form onSubmit={handleAddTransaction}>
+            <form onSubmit={handleSaveTransaction}>
               <div className="form-group">
                 <label className="form-label">จำนวนเงิน (บาท)</label>
                 <input
@@ -2484,7 +2911,7 @@ export default function MoneyAppPage() {
                     const id = e.target.value;
                     setTxAccountId(id);
                     const acc = appState.accounts.find((a) => a.id === id);
-                    if (acc) setTxShared(Boolean(acc.isSharedWithFamily));
+                    if (acc && !editingTx) setTxShared(Boolean(acc.isSharedWithFamily));
                   }}
                 >
                   {visibleAccounts.map((a) => (
@@ -2531,7 +2958,8 @@ export default function MoneyAppPage() {
                 </div>
               )}
 
-              {txType === 'expense' &&
+              {!editingTx &&
+                txType === 'expense' &&
                 ACCOUNT_TYPE_META[appState.accounts.find((a) => a.id === txAccountId)?.type]
                   ?.isLiability && (
                   <div
@@ -2603,30 +3031,41 @@ export default function MoneyAppPage() {
                 </label>
               </div>
 
-              <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>
-                ✅ บันทึกรายการ
-              </button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {editingTx && (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteTransaction(editingTx)}
+                    className="btn btn-danger"
+                  >
+                    🗑️ ลบรายการ
+                  </button>
+                )}
+                <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>
+                  ✅ {editingTx ? 'บันทึกการแก้ไข' : 'บันทึกรายการ'}
+                </button>
+              </div>
             </form>
           </div>
         </div>
       )}
 
       {/* ===================================================================== */}
-      {/* MODAL 2: สร้างบัญชีใหม่ / บัตรเครดิต / PayLater */}
+      {/* MODAL 2: สร้าง / แก้ไข บัญชีธนาคาร / บัตรเครดิต / PayLater */}
       {/* ===================================================================== */}
       {showAccountModal && (
         <div className="modal-backdrop" onClick={() => setShowAccountModal(false)}>
           <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <h3 style={{ fontSize: '1.15rem', fontWeight: 800 }}>
-                💳 เพิ่มบัญชีใหม่ / บัตรเครดิต / PayLater
+                {editingAccount ? '✏️ แก้ไขข้อมูลบัญชี / บัตร' : '💳 เพิ่มบัญชีใหม่ / บัตรเครดิต / PayLater'}
               </h3>
               <button type="button" onClick={() => setShowAccountModal(false)} className="btn btn-ghost btn-sm">
                 ✕
               </button>
             </div>
 
-            <form onSubmit={handleCreateAccount}>
+            <form onSubmit={handleSaveAccount}>
               <div className="form-group">
                 <label className="form-label">ประเภทบัญชี</label>
                 <select
@@ -2656,7 +3095,7 @@ export default function MoneyAppPage() {
 
               {!ACCOUNT_TYPE_META[accType]?.isLiability ? (
                 <div className="form-group">
-                  <label className="form-label">ยอดเงินคงเหลือตั้งต้น (บาท)</label>
+                  <label className="form-label">ยอดเงินคงเหลือ (บาท)</label>
                   <input
                     type="number"
                     step="0.01"
@@ -2717,6 +3156,27 @@ export default function MoneyAppPage() {
                 </>
               )}
 
+              <div className="form-group">
+                <label className="form-label">สีของการ์ดบัญชี/บัตร</label>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  {['#059669', '#0284c7', '#4f46e5', '#7c3aed', '#db2777', '#ea580c', '#1e293b', '#b91c1c'].map((col) => (
+                    <button
+                      key={col}
+                      type="button"
+                      onClick={() => setAccColor(col)}
+                      style={{
+                        width: 30,
+                        height: 30,
+                        borderRadius: '50%',
+                        background: col,
+                        border: accColor === col ? '3px solid #0f172a' : '2px solid transparent',
+                        cursor: 'pointer',
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+
               <div style={{ marginBottom: 18 }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.88rem', fontWeight: 600, cursor: 'pointer' }}>
                   <input
@@ -2728,9 +3188,20 @@ export default function MoneyAppPage() {
                 </label>
               </div>
 
-              <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>
-                ＋ สร้างบัญชี / บัตร
-              </button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {editingAccount && (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteAccount(editingAccount)}
+                    className="btn btn-danger"
+                  >
+                    🗑️ ลบบัญชี
+                  </button>
+                )}
+                <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>
+                  ✅ {editingAccount ? 'บันทึกการแก้ไข' : 'สร้างบัญชี / บัตร'}
+                </button>
+              </div>
             </form>
           </div>
         </div>
@@ -2791,19 +3262,21 @@ export default function MoneyAppPage() {
       )}
 
       {/* ===================================================================== */}
-      {/* MODAL 4: เพิ่มรายการผ่อนชำระ */}
+      {/* MODAL 4: เพิ่ม / แก้ไข รายการผ่อนชำระ */}
       {/* ===================================================================== */}
       {showInstallmentModal && (
         <div className="modal-backdrop" onClick={() => setShowInstallmentModal(false)}>
           <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <h3 style={{ fontSize: '1.15rem', fontWeight: 800 }}>📅 เพิ่มรายการผ่อนสินค้า (0% / ผ่อนบัตร)</h3>
+              <h3 style={{ fontSize: '1.15rem', fontWeight: 800 }}>
+                {editingInstallment ? '✏️ แก้ไขรายการผ่อนสินค้า' : '📅 เพิ่มรายการผ่อนสินค้า (0% / ผ่อนบัตร)'}
+              </h3>
               <button type="button" onClick={() => setShowInstallmentModal(false)} className="btn btn-ghost btn-sm">
                 ✕
               </button>
             </div>
 
-            <form onSubmit={handleCreateInstallment}>
+            <form onSubmit={handleSaveInstallment}>
               <div className="form-group">
                 <label className="form-label">ชื่อสินค้า / รายการที่ผ่อน</label>
                 <input
@@ -2846,19 +3319,29 @@ export default function MoneyAppPage() {
                   />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">จำนวนงวด (เดือน)</label>
-                  <select
-                    className="form-select"
+                  <label className="form-label">จำนวนงวดทั้งหมด (เดือน)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="60"
+                    className="form-input"
                     value={instMonths}
                     onChange={(e) => setInstMonths(e.target.value)}
-                  >
-                    <option value="3">3 เดือน</option>
-                    <option value="6">6 เดือน</option>
-                    <option value="10">10 เดือน</option>
-                    <option value="12">12 เดือน</option>
-                    <option value="24">24 เดือน</option>
-                  </select>
+                    required
+                  />
                 </div>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">จ่ายไปแล้วกี่งวด</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="60"
+                  className="form-input"
+                  value={instPaidMonths}
+                  onChange={(e) => setInstPaidMonths(e.target.value)}
+                />
               </div>
 
               <div style={{ marginBottom: 16 }}>
@@ -2872,31 +3355,44 @@ export default function MoneyAppPage() {
                 </label>
               </div>
 
-              <button
-                type="submit"
-                onClick={() => {
-                  if (!instAccountId && creditAccounts[0]) {
-                    setInstAccountId(creditAccounts[0].id);
-                  }
-                }}
-                className="btn btn-primary"
-                style={{ width: '100%' }}
-              >
-                ＋ บันทึกรายการผ่อนชำระ
-              </button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {editingInstallment && (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteInstallment(editingInstallment)}
+                    className="btn btn-danger"
+                  >
+                    🗑️ ลบ
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  onClick={() => {
+                    if (!instAccountId && creditAccounts[0]) {
+                      setInstAccountId(creditAccounts[0].id);
+                    }
+                  }}
+                  className="btn btn-primary"
+                  style={{ flex: 1 }}
+                >
+                  ✅ {editingInstallment ? 'บันทึกการแก้ไข' : 'บันทึกรายการผ่อนชำระ'}
+                </button>
+              </div>
             </form>
           </div>
         </div>
       )}
 
       {/* ===================================================================== */}
-      {/* MODAL 5: สร้างการยืมเงิน / ให้คนอื่นยืมเงิน */}
+      {/* MODAL 5: สร้าง / แก้ไข การยืมเงิน / ให้คนอื่นยืมเงิน */}
       {/* ===================================================================== */}
       {showLoanModal && (
         <div className="modal-backdrop" onClick={() => setShowLoanModal(false)}>
           <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <h3 style={{ fontSize: '1.15rem', fontWeight: 800 }}>🤝 สร้างรายการยืมเงิน / ให้ยืมเงิน</h3>
+              <h3 style={{ fontSize: '1.15rem', fontWeight: 800 }}>
+                {editingLoan ? '✏️ แก้ไขรายการยืม / ให้ยืม' : '🤝 สร้างรายการยืมเงิน / ให้ยืมเงิน'}
+              </h3>
               <button type="button" onClick={() => setShowLoanModal(false)} className="btn btn-ghost btn-sm">
                 ✕
               </button>
@@ -2921,7 +3417,7 @@ export default function MoneyAppPage() {
               </button>
             </div>
 
-            <form onSubmit={handleCreateLoan}>
+            <form onSubmit={handleSaveLoan}>
               <div className="form-group">
                 <label className="form-label">
                   {loanType === 'lend' ? 'ชื่อคนที่มายืมเงินเรา' : 'ชื่อคนที่เรายืมเงินมา'}
@@ -2936,17 +3432,30 @@ export default function MoneyAppPage() {
                 />
               </div>
 
-              <div className="form-group">
-                <label className="form-label">จำนวนเงิน (บาท)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  className="form-input"
-                  placeholder="0.00"
-                  value={loanAmount}
-                  onChange={(e) => setLoanAmount(e.target.value)}
-                  required
-                />
+              <div className="grid-2">
+                <div className="form-group">
+                  <label className="form-label">จำนวนเงินทั้งหมด (บาท)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="form-input"
+                    placeholder="0.00"
+                    value={loanAmount}
+                    onChange={(e) => setLoanAmount(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">คืนมาแล้ว / จ่ายแล้ว (บาท)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="form-input"
+                    placeholder="0.00"
+                    value={loanPaidAmount}
+                    onChange={(e) => setLoanPaidAmount(e.target.value)}
+                  />
+                </div>
               </div>
 
               <div className="form-group">
@@ -2999,9 +3508,20 @@ export default function MoneyAppPage() {
                 </label>
               </div>
 
-              <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>
-                ✅ บันทึกรายการ
-              </button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {editingLoan && (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteLoan(editingLoan)}
+                    className="btn btn-danger"
+                  >
+                    🗑️ ลบรายการ
+                  </button>
+                )}
+                <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>
+                  ✅ {editingLoan ? 'บันทึกการแก้ไข' : 'บันทึกรายการ'}
+                </button>
+              </div>
             </form>
           </div>
         </div>
@@ -3072,6 +3592,53 @@ export default function MoneyAppPage() {
 
               <button type="submit" className="btn btn-success" style={{ width: '100%' }}>
                 ✅ บันทึกยอดชำระ
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ===================================================================== */}
+      {/* MODAL 7: แก้ไขชื่อโปรไฟล์ & ชื่อบ้าน */}
+      {/* ===================================================================== */}
+      {showEditProfileModal && (
+        <div className="modal-backdrop" onClick={() => setShowEditProfileModal(false)}>
+          <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <h3 style={{ fontSize: '1.15rem', fontWeight: 800 }}>
+                ✏️ แก้ไขชื่อแสดงผล & ชื่อบ้าน
+              </h3>
+              <button type="button" onClick={() => setShowEditProfileModal(false)} className="btn btn-ghost btn-sm">
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveProfileAndFamily}>
+              <div className="form-group">
+                <label className="form-label">ชื่อที่ใช้แสดงของคุณ ({currentUser.email})</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={profileNameInput}
+                  onChange={(e) => setProfileNameInput(e.target.value)}
+                  required
+                />
+              </div>
+
+              {currentFamily && (
+                <div className="form-group">
+                  <label className="form-label">ชื่อบ้านครอบครัว ({currentFamily.inviteCode})</label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={familyNameEditInput}
+                    onChange={(e) => setFamilyNameEditInput(e.target.value)}
+                  />
+                </div>
+              )}
+
+              <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>
+                ✅ บันทึกการเปลี่ยนแปลง
               </button>
             </form>
           </div>
