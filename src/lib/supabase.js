@@ -1,5 +1,5 @@
-const STORAGE_KEY = 'flowwallet_app_state_v1';
-const CURRENT_USER_KEY = 'flowwallet_current_user_v1';
+const STORAGE_KEY = 'flowwallet_multiuser_v2';
+const SESSION_USER_KEY = 'flowwallet_active_session_v2';
 
 export const EXPENSE_CATEGORIES = [
   { id: 'food', label: 'อาหาร & เครื่องดื่ม', icon: '🍜', color: '#ef4444' },
@@ -28,314 +28,30 @@ export const ACCOUNT_TYPE_META = {
   bnpl: { label: 'สินเชื่อ / PayLater (ใช้ก่อนจ่ายทีหลัง)', badge: 'PayLater', icon: '⚡', isLiability: true },
 };
 
-export function createInitialSeedData() {
-  const familyId = 'fam-home-2026';
-  const today = new Date().toISOString().slice(0, 10);
-
+// Clean empty initial state (no fake/hardcoded users!)
+export function createEmptyAppState() {
   return {
-    users: [
-      {
-        email: 'sutti.owner@gmail.com',
-        name: 'คุณ (เจ้าของบัญชีหลัก)',
-        avatar: 'S',
-        familyId,
-      },
-      {
-        email: 'partner.home@gmail.com',
-        name: 'เมย์ (คนในบ้าน)',
-        avatar: 'M',
-        familyId,
-      },
-    ],
-    familyGroups: [
-      {
-        id: familyId,
-        name: 'บ้านของเรา (Family Space)',
-        inviteCode: 'HOME2026',
-        ownerEmail: 'sutti.owner@gmail.com',
-        memberEmails: ['sutti.owner@gmail.com', 'partner.home@gmail.com'],
-        createdAt: today,
-      },
-    ],
-    accounts: [
-      {
-        id: 'acc-kbank-main',
-        ownerEmail: 'sutti.owner@gmail.com',
-        ownerName: 'คุณ (เจ้าของบัญชีหลัก)',
-        familyId,
-        isSharedWithFamily: false,
-        name: 'กสิกรไทย (เงินเดือน)',
-        type: 'bank',
-        balance: 48500,
-        creditLimit: 0,
-        usedAmount: 0,
-        statementDay: 1,
-        dueDay: 1,
-        color: '#059669',
-        createdAt: today,
-      },
-      {
-        id: 'acc-cash-wallet',
-        ownerEmail: 'sutti.owner@gmail.com',
-        ownerName: 'คุณ (เจ้าของบัญชีหลัก)',
-        familyId,
-        isSharedWithFamily: false,
-        name: 'กระเป๋าเงินสดติดตัว',
-        type: 'cash',
-        balance: 3200,
-        creditLimit: 0,
-        usedAmount: 0,
-        statementDay: 1,
-        dueDay: 1,
-        color: '#0284c7',
-        createdAt: today,
-      },
-      {
-        id: 'acc-family-scb',
-        ownerEmail: 'sutti.owner@gmail.com',
-        ownerName: 'คุณ (เจ้าของบัญชีหลัก)',
-        familyId,
-        isSharedWithFamily: true,
-        name: 'SCB กองกลางของบ้าน',
-        type: 'bank',
-        balance: 26400,
-        creditLimit: 0,
-        usedAmount: 0,
-        statementDay: 1,
-        dueDay: 1,
-        color: '#7c3aed',
-        createdAt: today,
-      },
-      {
-        id: 'acc-partner-bank',
-        ownerEmail: 'partner.home@gmail.com',
-        ownerName: 'เมย์ (คนในบ้าน)',
-        familyId,
-        isSharedWithFamily: true,
-        name: 'กรุงไทย (เงินออมบ้าน - เมย์)',
-        type: 'bank',
-        balance: 35000,
-        creditLimit: 0,
-        usedAmount: 0,
-        statementDay: 1,
-        dueDay: 1,
-        color: '#db2777',
-        createdAt: today,
-      },
-      {
-        id: 'acc-cc-ktc',
-        ownerEmail: 'sutti.owner@gmail.com',
-        ownerName: 'คุณ (เจ้าของบัญชีหลัก)',
-        familyId,
-        isSharedWithFamily: true,
-        name: 'บัตรเครดิต KTC Signature',
-        type: 'credit_card',
-        balance: 0,
-        creditLimit: 80000,
-        usedAmount: 14800,
-        statementDay: 25,
-        dueDay: 10,
-        color: '#1e293b',
-        createdAt: today,
-      },
-      {
-        id: 'acc-bnpl-spay',
-        ownerEmail: 'sutti.owner@gmail.com',
-        ownerName: 'คุณ (เจ้าของบัญชีหลัก)',
-        familyId,
-        isSharedWithFamily: false,
-        name: 'SPayLater (ใช้ก่อนจ่ายทีหลัง)',
-        type: 'bnpl',
-        balance: 0,
-        creditLimit: 30000,
-        usedAmount: 4500,
-        statementDay: 1,
-        dueDay: 10,
-        color: '#ea580c',
-        createdAt: today,
-      },
-      {
-        id: 'acc-partner-cc',
-        ownerEmail: 'partner.home@gmail.com',
-        ownerName: 'เมย์ (คนในบ้าน)',
-        familyId,
-        isSharedWithFamily: true,
-        name: 'บัตรเครดิต Central The 1 (เมย์)',
-        type: 'credit_card',
-        balance: 0,
-        creditLimit: 50000,
-        usedAmount: 6200,
-        statementDay: 20,
-        dueDay: 5,
-        color: '#b91c1c',
-        createdAt: today,
-      },
-    ],
-    installments: [
-      {
-        id: 'inst-1',
-        accountId: 'acc-cc-ktc',
-        ownerEmail: 'sutti.owner@gmail.com',
-        ownerName: 'คุณ (เจ้าของบัญชีหลัก)',
-        isSharedWithFamily: true,
-        title: 'ผ่อนเครื่องซักผ้า LG เข้าบ้าน (0% 10 เดือน)',
-        totalAmount: 18000,
-        totalMonths: 10,
-        paidMonths: 4,
-        monthlyAmount: 1800,
-        interestRate: 0,
-        startDate: today,
-        createdAt: today,
-      },
-      {
-        id: 'inst-2',
-        accountId: 'acc-bnpl-spay',
-        ownerEmail: 'sutti.owner@gmail.com',
-        ownerName: 'คุณ (เจ้าของบัญชีหลัก)',
-        isSharedWithFamily: false,
-        title: 'ผ่อนหูฟัง Sony WH-1000XM5 (0% 6 เดือน)',
-        totalAmount: 9000,
-        totalMonths: 6,
-        paidMonths: 3,
-        monthlyAmount: 1500,
-        interestRate: 0,
-        startDate: today,
-        createdAt: today,
-      },
-    ],
-    transactions: [
-      {
-        id: 'tx-1',
-        ownerEmail: 'sutti.owner@gmail.com',
-        ownerName: 'คุณ (เจ้าของบัญชีหลัก)',
-        isSharedWithFamily: false,
-        type: 'income',
-        amount: 55000,
-        category: 'salary',
-        note: 'เงินเดือนเข้ากสิกรไทย',
-        accountId: 'acc-kbank-main',
-        txDate: today,
-        createdAt: today,
-      },
-      {
-        id: 'tx-2',
-        ownerEmail: 'sutti.owner@gmail.com',
-        ownerName: 'คุณ (เจ้าของบัญชีหลัก)',
-        isSharedWithFamily: true,
-        type: 'expense',
-        amount: 2450,
-        category: 'home',
-        note: 'จ่ายค่าไฟ + ค่าเน็ตบ้าน (รูดบัตร KTC)',
-        accountId: 'acc-cc-ktc',
-        txDate: today,
-        createdAt: today,
-      },
-      {
-        id: 'tx-3',
-        ownerEmail: 'partner.home@gmail.com',
-        ownerName: 'เมย์ (คนในบ้าน)',
-        isSharedWithFamily: true,
-        type: 'expense',
-        amount: 1890,
-        category: 'food',
-        note: 'ซื้อของสดแม็คโครเข้าตู้เย็นบ้าน',
-        accountId: 'acc-partner-cc',
-        txDate: today,
-        createdAt: today,
-      },
-      {
-        id: 'tx-4',
-        ownerEmail: 'sutti.owner@gmail.com',
-        ownerName: 'คุณ (เจ้าของบัญชีหลัก)',
-        isSharedWithFamily: false,
-        type: 'expense',
-        amount: 320,
-        category: 'food',
-        note: 'กาแฟ + ข้าวเที่ยงที่ออฟฟิศ',
-        accountId: 'acc-cash-wallet',
-        txDate: today,
-        createdAt: today,
-      },
-      {
-        id: 'tx-5',
-        ownerEmail: 'sutti.owner@gmail.com',
-        ownerName: 'คุณ (เจ้าของบัญชีหลัก)',
-        isSharedWithFamily: true,
-        type: 'card_payment',
-        amount: 5000,
-        category: 'transfer',
-        note: 'จ่ายบิลบัตรเครดิต KTC บางส่วน',
-        accountId: 'acc-kbank-main',
-        toAccountId: 'acc-cc-ktc',
-        txDate: today,
-        createdAt: today,
-      },
-    ],
-    loans: [
-      {
-        id: 'loan-1',
-        ownerEmail: 'sutti.owner@gmail.com',
-        ownerName: 'คุณ (เจ้าของบัญชีหลัก)',
-        isSharedWithFamily: true,
-        loanType: 'lend',
-        personName: 'บอย (เพื่อนออฟฟิศ)',
-        totalAmount: 5000,
-        paidAmount: 2000,
-        accountId: 'acc-kbank-main',
-        dueDate: today,
-        note: 'ยืมจ่ายค่าซ่อมรถ นัดคืนสิ้นเดือน',
-        status: 'active',
-        repayments: [
-          {
-            id: 'rep-1',
-            amount: 2000,
-            accountId: 'acc-kbank-main',
-            date: today,
-            note: 'โอนคืนงวดแรกเข้ากสิกร',
-          },
-        ],
-        createdAt: today,
-      },
-      {
-        id: 'loan-2',
-        ownerEmail: 'sutti.owner@gmail.com',
-        ownerName: 'คุณ (เจ้าของบัญชีหลัก)',
-        isSharedWithFamily: true,
-        loanType: 'borrow',
-        personName: 'คุณแม่',
-        totalAmount: 15000,
-        paidAmount: 5000,
-        accountId: 'acc-family-scb',
-        dueDate: today,
-        note: 'ยืมมาสำรองค่าต่อประกันรถยนต์',
-        status: 'active',
-        repayments: [
-          {
-            id: 'rep-2',
-            amount: 5000,
-            accountId: 'acc-family-scb',
-            date: today,
-            note: 'โอนคืนคุณแม่งวดที่ 1',
-          },
-        ],
-        createdAt: today,
-      },
-    ],
+    users: [],
+    familyGroups: [],
+    accounts: [],
+    installments: [],
+    transactions: [],
+    loans: [],
   };
 }
 
 export function loadAppState() {
-  if (typeof window === 'undefined') return createInitialSeedData();
+  if (typeof window === 'undefined') return createEmptyAppState();
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) {
-      const seed = createInitialSeedData();
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(seed));
-      return seed;
+      const empty = createEmptyAppState();
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(empty));
+      return empty;
     }
     return JSON.parse(raw);
   } catch {
-    return createInitialSeedData();
+    return createEmptyAppState();
   }
 }
 
@@ -347,7 +63,7 @@ export function saveAppState(state) {
 export function loadCurrentUser() {
   if (typeof window === 'undefined') return null;
   try {
-    const raw = window.localStorage.getItem(CURRENT_USER_KEY);
+    const raw = window.localStorage.getItem(SESSION_USER_KEY);
     if (!raw) return null;
     return JSON.parse(raw);
   } catch {
@@ -358,9 +74,28 @@ export function loadCurrentUser() {
 export function saveCurrentUser(user) {
   if (typeof window === 'undefined') return;
   if (!user) {
-    window.localStorage.removeItem(CURRENT_USER_KEY);
+    window.localStorage.removeItem(SESSION_USER_KEY);
   } else {
-    window.localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(user));
+    window.localStorage.setItem(SESSION_USER_KEY, JSON.stringify(user));
+  }
+}
+
+// Decode JWT payload (for Google Identity Services ID Token or Supabase JWT)
+export function decodeJwtPayload(token) {
+  try {
+    const base64Url = token.split('.')[1];
+    if (!base64Url) return null;
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    const jsonPayload = decodeURIComponent(
+      window
+        .atob(base64)
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join('')
+    );
+    return JSON.parse(jsonPayload);
+  } catch {
+    return null;
   }
 }
 

@@ -9,7 +9,8 @@ import {
   saveAppState,
   loadCurrentUser,
   saveCurrentUser,
-  createInitialSeedData,
+  createEmptyAppState,
+  decodeJwtPayload,
   isSupabaseConfigured,
   startSupabaseGoogleLogin,
 } from '../lib/supabase';
@@ -33,7 +34,8 @@ export default function MoneyAppPage() {
   const [activeTab, setActiveTab] = useState('dashboard'); // dashboard | accounts | loans | reports | family
   const [viewMode, setViewMode] = useState('personal'); // personal | family
 
-  // Login Form State
+  // Google Sign-In State
+  const [showGoogleEmailStep, setShowGoogleEmailStep] = useState(false);
   const [customGmail, setCustomGmail] = useState('');
   const [customName, setCustomName] = useState('');
   const [loginError, setLoginError] = useState('');
@@ -41,14 +43,14 @@ export default function MoneyAppPage() {
   // Modals State
   const [showTxModal, setShowTxModal] = useState(false);
   const [showAccountModal, setShowAccountModal] = useState(false);
-  const [showPayCardModal, setShowPayCardModal] = useState(null); // account object
+  const [showPayCardModal, setShowPayCardModal] = useState(null);
   const [showInstallmentModal, setShowInstallmentModal] = useState(false);
   const [showLoanModal, setShowLoanModal] = useState(false);
-  const [showRepayLoanModal, setShowRepayLoanModal] = useState(null); // loan object
+  const [showRepayLoanModal, setShowRepayLoanModal] = useState(null);
   const [toastMessage, setToastMessage] = useState('');
 
   // Transaction Form State
-  const [txType, setTxType] = useState('expense'); // expense | income | transfer
+  const [txType, setTxType] = useState('expense');
   const [txAmount, setTxAmount] = useState('');
   const [txCategory, setTxCategory] = useState('food');
   const [txAccountId, setTxAccountId] = useState('');
@@ -82,13 +84,13 @@ export default function MoneyAppPage() {
   const [instShared, setInstShared] = useState(false);
 
   // New Loan Form State
-  const [loanType, setLoanType] = useState('lend'); // lend | borrow
+  const [loanType, setLoanType] = useState('lend');
   const [loanPerson, setLoanPerson] = useState('');
   const [loanAmount, setLoanAmount] = useState('');
   const [loanAccountId, setLoanAccountId] = useState('');
   const [loanDueDate, setLoanDueDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [loanNote, setLoanNote] = useState('');
-  const [loanShared, setLoanShared] = useState(true);
+  const [loanShared, setLoanShared] = useState(false);
 
   // Repay Loan Form State
   const [repayAmount, setRepayAmount] = useState('');
@@ -99,14 +101,6 @@ export default function MoneyAppPage() {
   const [inviteEmailInput, setInviteEmailInput] = useState('');
   const [joinCodeInput, setJoinCodeInput] = useState('');
   const [newFamilyName, setNewFamilyName] = useState('');
-
-  useEffect(() => {
-    const loadedState = loadAppState();
-    const loadedUser = loadCurrentUser();
-    setAppState(loadedState);
-    setCurrentUser(loadedUser);
-    setHydrated(true);
-  }, []);
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -123,6 +117,133 @@ export default function MoneyAppPage() {
     });
   };
 
+  // Register or restore a user's isolated workspace by their Gmail
+  const completeUserSession = (stateSnapshot, email, name, pictureUrl) => {
+    const cleanEmail = (email || '').trim().toLowerCase();
+    if (!cleanEmail) return;
+
+    const existingUser = stateSnapshot.users.find(
+      (u) => u.email.toLowerCase() === cleanEmail
+    );
+    if (existingUser) {
+      setCurrentUser(existingUser);
+      saveCurrentUser(existingUser);
+      return;
+    }
+
+    const fallbackName = cleanEmail.split('@')[0];
+    const displayName = (name || fallbackName).trim();
+    const joinedFamily = stateSnapshot.familyGroups.find((fg) =>
+      fg.memberEmails.includes(cleanEmail)
+    );
+
+    const newUser = {
+      email: cleanEmail,
+      name: displayName,
+      avatar: pictureUrl || displayName.slice(0, 1).toUpperCase(),
+      familyId: joinedFamily ? joinedFamily.id : null,
+    };
+
+    const today = new Date().toISOString().slice(0, 10);
+    // Create 1 default Cash wallet with 0 THB for this new Gmail user (no fake data!)
+    const starterCashAcc = {
+      id: `acc-${Date.now()}`,
+      ownerEmail: cleanEmail,
+      ownerName: displayName,
+      familyId: newUser.familyId,
+      isSharedWithFamily: false,
+      name: 'กระเป๋าเงินสด',
+      type: 'cash',
+      balance: 0,
+      creditLimit: 0,
+      usedAmount: 0,
+      statementDay: 1,
+      dueDay: 1,
+      color: '#059669',
+      createdAt: today,
+    };
+
+    const nextState = {
+      ...stateSnapshot,
+      users: [...stateSnapshot.users, newUser],
+      accounts: [...stateSnapshot.accounts, starterCashAcc],
+    };
+    saveAppState(nextState);
+    setAppState(nextState);
+    setCurrentUser(newUser);
+    saveCurrentUser(newUser);
+  };
+
+  // Initial Load + Auto-Login from Session or OAuth Redirect Hash
+  useEffect(() => {
+    const loadedState = loadAppState();
+    setAppState(loadedState);
+
+    // 1. Check if returning from Google OAuth / Supabase OAuth redirect (#access_token or #id_token)
+    if (typeof window !== 'undefined' && window.location.hash) {
+      const hashParams = new URLSearchParams(window.location.hash.substring(1));
+      const idToken = hashParams.get('id_token') || hashParams.get('access_token');
+      if (idToken) {
+        const payload = decodeJwtPayload(idToken);
+        if (payload && payload.email) {
+          const fullName =
+            payload.name ||
+            payload.user_metadata?.full_name ||
+            payload.email.split('@')[0];
+          const avatarUrl =
+            payload.picture || payload.user_metadata?.avatar_url || '';
+          completeUserSession(loadedState, payload.email, fullName, avatarUrl);
+          window.history.replaceState(null, '', window.location.pathname);
+          setHydrated(true);
+          return;
+        }
+      }
+    }
+
+    // 2. Auto-login existing user session on this browser
+    const savedUser = loadCurrentUser();
+    if (savedUser && savedUser.email) {
+      completeUserSession(loadedState, savedUser.email, savedUser.name, savedUser.avatar);
+    }
+
+    setHydrated(true);
+  }, []);
+
+  // Load Google Identity Services (One-Tap / Sign In with Google) if Client ID is configured
+  useEffect(() => {
+    if (!hydrated || currentUser || typeof window === 'undefined') return;
+    const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+    if (!googleClientId) return;
+
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    script.onload = () => {
+      if (window.google?.accounts?.id) {
+        window.google.accounts.id.initialize({
+          client_id: googleClientId,
+          callback: (response) => {
+            const payload = decodeJwtPayload(response.credential);
+            if (payload && payload.email) {
+              const latestState = loadAppState();
+              completeUserSession(
+                latestState,
+                payload.email,
+                payload.name || payload.email.split('@')[0],
+                payload.picture
+              );
+              showToast(`เข้าสู่ระบบด้วย ${payload.email} สำเร็จ`);
+            }
+          },
+          auto_select: true,
+        });
+        window.google.accounts.id.prompt();
+      }
+    };
+    document.body.appendChild(script);
+  }, [hydrated, currentUser]);
+
   // Current user's family group
   const currentFamily = useMemo(() => {
     if (!appState || !currentUser) return null;
@@ -135,7 +256,7 @@ export default function MoneyAppPage() {
     );
   }, [appState, currentUser]);
 
-  // Filtered data based on View Mode (Personal vs Family Shared)
+  // Strictly isolated data per Gmail (unless viewing Family Shared items of the same house)
   const visibleAccounts = useMemo(() => {
     if (!appState || !currentUser) return [];
     if (viewMode === 'family' && currentFamily) {
@@ -184,7 +305,6 @@ export default function MoneyAppPage() {
     return appState.loans.filter((l) => l.ownerEmail === currentUser.email);
   }, [appState, currentUser, viewMode, currentFamily]);
 
-  // Separate Asset Accounts vs Credit Card / BNPL Accounts
   const assetAccounts = useMemo(
     () => visibleAccounts.filter((a) => !ACCOUNT_TYPE_META[a.type]?.isLiability),
     [visibleAccounts]
@@ -230,72 +350,45 @@ export default function MoneyAppPage() {
     };
   }, [assetAccounts, creditAccounts, visibleLoans, visibleTransactions]);
 
-  // Handle Google Login (Preset or Custom Gmail)
-  const handleLoginWithGmail = (email, name) => {
-    const cleanEmail = (email || '').trim().toLowerCase();
-    if (!cleanEmail || !cleanEmail.includes('@')) {
-      setLoginError('กรุณากรอกอีเมล Gmail ให้ถูกต้อง เช่น name@gmail.com');
+  // Handle "Continue with Google" Button Click
+  const handleGoogleButtonClick = () => {
+    if (isSupabaseConfigured()) {
+      startSupabaseGoogleLogin();
       return;
+    }
+    if (typeof window !== 'undefined' && window.google?.accounts?.id) {
+      window.google.accounts.id.prompt();
+      return;
+    }
+    setShowGoogleEmailStep(true);
+  };
+
+  // Handle Direct Gmail Sign-In
+  const handleLoginWithGmail = (e) => {
+    e.preventDefault();
+    let cleanEmail = (customGmail || '').trim().toLowerCase();
+    if (!cleanEmail) {
+      setLoginError('กรุณากรอกอีเมล Gmail ของคุณ');
+      return;
+    }
+    // If user typed just their username without @, append @gmail.com automatically
+    if (!cleanEmail.includes('@')) {
+      cleanEmail = `${cleanEmail}@gmail.com`;
     }
     setLoginError('');
-
-    const existingUser = appState.users.find((u) => u.email.toLowerCase() === cleanEmail);
-    if (existingUser) {
-      setCurrentUser(existingUser);
-      saveCurrentUser(existingUser);
-      showToast(`เข้าสู่ระบบด้วย ${existingUser.email} สำเร็จ`);
-      return;
-    }
-
-    const displayName = (name || cleanEmail.split('@')[0]).trim();
-    const defaultFamily = appState.familyGroups[0];
-    const newUser = {
-      email: cleanEmail,
-      name: displayName,
-      avatar: displayName.slice(0, 1).toUpperCase(),
-      familyId: defaultFamily ? defaultFamily.id : null,
-    };
-
-    const today = new Date().toISOString().slice(0, 10);
-    const starterCashAcc = {
-      id: `acc-${Date.now()}`,
-      ownerEmail: cleanEmail,
-      ownerName: displayName,
-      familyId: newUser.familyId,
-      isSharedWithFamily: true,
-      name: `กระเป๋าเงินสด (${displayName})`,
-      type: 'cash',
-      balance: 5000,
-      creditLimit: 0,
-      usedAmount: 0,
-      statementDay: 1,
-      dueDay: 1,
-      color: '#059669',
-      createdAt: today,
-    };
-
-    updateState((prev) => ({
-      ...prev,
-      users: [...prev.users, newUser],
-      familyGroups: prev.familyGroups.map((fg, idx) =>
-        idx === 0 && !fg.memberEmails.includes(cleanEmail)
-          ? { ...fg, memberEmails: [...fg.memberEmails, cleanEmail] }
-          : fg
-      ),
-      accounts: [...prev.accounts, starterCashAcc],
-    }));
-
-    setCurrentUser(newUser);
-    saveCurrentUser(newUser);
-    showToast(`ยินดีต้อนรับ ${displayName} (${cleanEmail})`);
+    completeUserSession(appState, cleanEmail, customName || cleanEmail.split('@')[0], '');
+    showToast(`เข้าสู่ระบบด้วย ${cleanEmail} สำเร็จ`);
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
     saveCurrentUser(null);
+    setShowGoogleEmailStep(false);
+    setCustomGmail('');
+    setCustomName('');
   };
 
-  // Open Transaction Modal with sensible default account
+  // Open Transaction Modal
   const openNewTransactionModal = (defaultType = 'expense') => {
     setTxType(defaultType);
     setTxAmount('');
@@ -315,7 +408,7 @@ export default function MoneyAppPage() {
     setShowTxModal(true);
   };
 
-  // Submit Transaction (Income / Expense / Transfer / Installment Swipe)
+  // Submit Transaction
   const handleAddTransaction = (e) => {
     e.preventDefault();
     const amount = parseFloat(txAmount);
@@ -560,7 +653,7 @@ export default function MoneyAppPage() {
       ownerEmail: currentUser.email,
       ownerName: currentUser.name,
       isSharedWithFamily: loanShared,
-      loanType, // lend = ให้คนอื่นยืม (เงินออก), borrow = ยืมคนอื่นมา (เงินเข้า)
+      loanType,
       personName: loanPerson.trim(),
       totalAmount: amount,
       paidAmount: 0,
@@ -598,7 +691,7 @@ export default function MoneyAppPage() {
     );
   };
 
-  // Record Loan Repayment (Partial or Full)
+  // Record Loan Repayment
   const handleRecordLoanRepayment = (e) => {
     e.preventDefault();
     if (!showRepayLoanModal || !repayAccountId) return;
@@ -617,8 +710,6 @@ export default function MoneyAppPage() {
       ...prev,
       accounts: prev.accounts.map((a) => {
         if (a.id !== repayAccountId) return a;
-        // If 'lend', receiving money back increases our bank balance.
-        // If 'borrow', paying back decreases our bank balance.
         return {
           ...a,
           balance:
@@ -682,6 +773,36 @@ export default function MoneyAppPage() {
     showToast('อัปเดตสถานะการแชร์บัญชีกับคนในบ้านแล้ว');
   };
 
+  // Create New Family House
+  const handleCreateFamilyGroup = (e) => {
+    e.preventDefault();
+    const houseName = (newFamilyName || `บ้านของ ${currentUser.name}`).trim();
+    const randomCode = `HOME-${Math.floor(1000 + Math.random() * 9000)}`;
+    const newGroup = {
+      id: `fam-${Date.now()}`,
+      name: houseName,
+      inviteCode: randomCode,
+      ownerEmail: currentUser.email,
+      memberEmails: [currentUser.email],
+      createdAt: new Date().toISOString().slice(0, 10),
+    };
+
+    updateState((prev) => ({
+      ...prev,
+      familyGroups: [...prev.familyGroups, newGroup],
+      users: prev.users.map((u) =>
+        u.email === currentUser.email ? { ...u, familyId: newGroup.id } : u
+      ),
+    }));
+    setCurrentUser((prev) => {
+      const updated = { ...prev, familyId: newGroup.id };
+      saveCurrentUser(updated);
+      return updated;
+    });
+    setNewFamilyName('');
+    showToast(`สร้างบ้าน "${houseName}" รหัส ${randomCode} สำเร็จ!`);
+  };
+
   // Invite Family Member by Gmail
   const handleInviteFamilyEmail = (e) => {
     e.preventDefault();
@@ -700,7 +821,7 @@ export default function MoneyAppPage() {
     showToast(`เพิ่ม ${email} เข้าสู่บ้าน "${currentFamily.name}" แล้ว`);
   };
 
-  // Join or Create Family House
+  // Join Family House by Invite Code
   const handleJoinFamilyByCode = (e) => {
     e.preventDefault();
     const code = joinCodeInput.trim().toUpperCase();
@@ -721,7 +842,11 @@ export default function MoneyAppPage() {
         u.email === currentUser.email ? { ...u, familyId: found.id } : u
       ),
     }));
-    setCurrentUser((prev) => ({ ...prev, familyId: found.id }));
+    setCurrentUser((prev) => {
+      const updated = { ...prev, familyId: found.id };
+      saveCurrentUser(updated);
+      return updated;
+    });
     setJoinCodeInput('');
     showToast(`เข้าร่วม "${found.name}" สำเร็จ!`);
   };
@@ -763,7 +888,7 @@ export default function MoneyAppPage() {
   }
 
   // ============================================================================
-  // 1. GOOGLE LOGIN GATE (ต้อง Login Gmail ก่อนเข้าใช้งาน)
+  // 1. CLEAN GOOGLE SIGN-IN SCREEN (ไม่มีชื่อค้าง! Gmail ใคร Gmail มัน)
   // ============================================================================
   if (!currentUser) {
     return (
@@ -780,14 +905,14 @@ export default function MoneyAppPage() {
         <div
           className="card"
           style={{
-            maxWidth: 460,
+            maxWidth: 420,
             width: '100%',
-            padding: 32,
+            padding: 36,
             borderRadius: 24,
             boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
           }}
         >
-          <div style={{ textAlign: 'center', marginBottom: 24 }}>
+          <div style={{ textAlign: 'center', marginBottom: 28 }}>
             <div
               style={{
                 width: 64,
@@ -804,124 +929,106 @@ export default function MoneyAppPage() {
             >
               💳
             </div>
-            <h1 style={{ fontSize: '1.55rem', fontWeight: 800, color: '#0f172a' }}>
+            <h1 style={{ fontSize: '1.6rem', fontWeight: 800, color: '#0f172a' }}>
               FlowWallet
             </h1>
-            <p style={{ color: '#64748b', fontSize: '0.92rem', marginTop: 4 }}>
+            <p style={{ color: '#64748b', fontSize: '0.92rem', marginTop: 6 }}>
               แอปรายรับ-รายจ่าย หลายบัญชี • บัตรเครดิต & PayLater • ยืม/ให้ยืม • แชร์ยอดรวมกับคนในบ้าน
             </p>
           </div>
 
-          {/* Quick 1-Click Gmail Accounts (For testing Multi-user & Family Sharing immediately) */}
-          <div style={{ marginBottom: 20 }}>
-            <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#475569', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.03em' }}>
-              คลิกเลือกบัญชี Gmail เพื่อเข้าใช้งานทันที
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {appState.users.map((u) => (
-                <button
-                  key={u.email}
-                  type="button"
-                  onClick={() => handleLoginWithGmail(u.email, u.name)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    width: '100%',
-                    padding: '12px 16px',
-                    borderRadius: 14,
-                    border: '1px solid #cbd5e1',
-                    background: '#ffffff',
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    transition: 'all 0.15s ease',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <div
-                      style={{
-                        width: 40,
-                        height: 40,
-                        borderRadius: '50%',
-                        background: u.email.includes('partner') ? '#db2777' : '#4f46e5',
-                        color: '#fff',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        fontWeight: 700,
-                      }}
-                    >
-                      {u.name.slice(0, 1)}
-                    </div>
-                    <div>
-                      <div style={{ fontWeight: 700, color: '#0f172a', fontSize: '0.95rem' }}>
-                        {u.name}
-                      </div>
-                      <div style={{ color: '#64748b', fontSize: '0.82rem' }}>{u.email}</div>
-                    </div>
-                  </div>
-                  <span className="badge badge-indigo">Google</span>
-                </button>
-              ))}
-            </div>
-          </div>
+          {!showGoogleEmailStep ? (
+            <div>
+              <button
+                type="button"
+                onClick={handleGoogleButtonClick}
+                style={{
+                  width: '100%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 12,
+                  padding: '14px 20px',
+                  borderRadius: 14,
+                  border: '1px solid #cbd5e1',
+                  background: '#ffffff',
+                  color: '#0f172a',
+                  fontWeight: 700,
+                  fontSize: '1rem',
+                  cursor: 'pointer',
+                  boxShadow: '0 2px 6px rgba(15, 23, 42, 0.06)',
+                  transition: 'all 0.15s ease',
+                }}
+              >
+                {/* Official 4-color Google G SVG */}
+                <svg width="22" height="22" viewBox="0 0 48 48">
+                  <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                  <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+                  <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+                  <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+                </svg>
+                <span>ดำเนินการต่อด้วย Google (Gmail)</span>
+              </button>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '18px 0' }}>
-            <div style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
-            <span style={{ fontSize: '0.8rem', color: '#94a3b8', fontWeight: 600 }}>
-              หรือเข้าด้วย Gmail อื่นของคุณ
-            </span>
-            <div style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
-          </div>
-
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              handleLoginWithGmail(customGmail, customName);
-            }}
-          >
-            <div className="form-group">
-              <label className="form-label">ชื่อเล่น / ชื่อที่ใช้แสดงในบ้าน</label>
-              <input
-                type="text"
-                className="form-input"
-                placeholder="เช่น นัท, พ่อ, แม่"
-                value={customName}
-                onChange={(e) => setCustomName(e.target.value)}
-              />
+              <p style={{ textAlign: 'center', fontSize: '0.8rem', color: '#94a3b8', marginTop: 18 }}>
+                ระบบจะจดจำการเข้าสู่ระบบของคุณบนอุปกรณ์นี้อัตโนมัติ แยกกระเป๋าตามบัญชี Gmail ของแต่ละคน
+              </p>
             </div>
-            <div className="form-group">
-              <label className="form-label">อีเมล Google (Gmail)</label>
-              <input
-                type="email"
-                className="form-input"
-                placeholder="yourname@gmail.com"
-                value={customGmail}
-                onChange={(e) => setCustomGmail(e.target.value)}
-                required
-              />
-            </div>
-
-            {loginError && (
-              <div style={{ color: '#dc2626', fontSize: '0.85rem', marginBottom: 12 }}>
-                {loginError}
+          ) : (
+            <form onSubmit={handleLoginWithGmail}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18 }}>
+                <svg width="24" height="24" viewBox="0 0 48 48">
+                  <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                  <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+                  <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+                  <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+                </svg>
+                <div style={{ fontWeight: 700, fontSize: '1.02rem' }}>ลงชื่อเข้าใช้ด้วย Google</div>
               </div>
-            )}
 
-            <button type="submit" className="btn btn-primary" style={{ width: '100%', padding: '12px 16px' }}>
-              <span>🔐</span> เข้าสู่ระบบด้วย Gmail
-            </button>
-          </form>
+              <div className="form-group">
+                <label className="form-label">อีเมล Gmail ของคุณ</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  placeholder="yourname@gmail.com"
+                  value={customGmail}
+                  onChange={(e) => setCustomGmail(e.target.value)}
+                  required
+                  autoFocus
+                />
+              </div>
 
-          {isSupabaseConfigured() && (
-            <button
-              type="button"
-              onClick={startSupabaseGoogleLogin}
-              className="btn btn-outline"
-              style={{ width: '100%', marginTop: 10 }}
-            >
-              🌐 Login with Google OAuth (Supabase Cloud)
-            </button>
+              <div className="form-group">
+                <label className="form-label">ชื่อที่ใช้แสดง (เว้นว่างให้ใช้ชื่อจาก Gmail ได้)</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  placeholder="เช่น นัท, เมย์"
+                  value={customName}
+                  onChange={(e) => setCustomName(e.target.value)}
+                />
+              </div>
+
+              {loginError && (
+                <div style={{ color: '#dc2626', fontSize: '0.85rem', marginBottom: 12 }}>
+                  {loginError}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: 8, marginTop: 18 }}>
+                <button
+                  type="button"
+                  onClick={() => setShowGoogleEmailStep(false)}
+                  className="btn btn-outline"
+                >
+                  ย้อนกลับ
+                </button>
+                <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>
+                  เข้าสู่ระบบอัตโนมัติ
+                </button>
+              </div>
+            </form>
           )}
         </div>
       </div>
@@ -933,7 +1040,6 @@ export default function MoneyAppPage() {
   // ============================================================================
   return (
     <div className="app-shell">
-      {/* Toast Notification */}
       {toastMessage && (
         <div
           style={{
@@ -1031,7 +1137,6 @@ export default function MoneyAppPage() {
           </button>
         </nav>
 
-        {/* Logged-in Gmail Profile & Quick Switcher */}
         <div
           style={{
             background: 'rgba(255,255,255,0.06)',
@@ -1040,35 +1145,32 @@ export default function MoneyAppPage() {
             marginTop: 'auto',
           }}
         >
-          <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginBottom: 6 }}>
-            เข้าสู่ระบบด้วย Gmail:
+          <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginBottom: 4 }}>
+            บัญชี Google ปัจจุบัน:
           </div>
-          <div style={{ fontWeight: 700, fontSize: '0.9rem', color: '#fff' }}>
+          <div style={{ fontWeight: 700, fontSize: '0.92rem', color: '#fff' }}>
             {currentUser.name}
           </div>
           <div style={{ fontSize: '0.78rem', color: '#cbd5e1', marginBottom: 10, wordBreak: 'break-all' }}>
             {currentUser.email}
           </div>
-          <div style={{ display: 'flex', gap: 6 }}>
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="btn btn-sm"
-              style={{
-                background: 'rgba(255,255,255,0.12)',
-                color: '#fff',
-                width: '100%',
-              }}
-            >
-              สลับบัญชี Gmail / ออก
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="btn btn-sm"
+            style={{
+              background: 'rgba(255,255,255,0.12)',
+              color: '#fff',
+              width: '100%',
+            }}
+          >
+            ออกจากระบบ
+          </button>
         </div>
       </aside>
 
       {/* MAIN AREA */}
       <div className="main-area">
-        {/* Sticky Top Header with Personal vs Family View Toggle */}
         <header className="top-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span style={{ fontSize: '1.25rem' }}>
@@ -1082,14 +1184,15 @@ export default function MoneyAppPage() {
               </div>
               <div style={{ fontSize: '0.76rem', color: '#64748b' }}>
                 {viewMode === 'family'
-                  ? `รวมทุกบัญชีที่คนในบ้านกดแชร์ (${currentFamily?.memberEmails.length || 1} คน)`
-                  : `แสดงเฉพาะบัญชีส่วนตัวและบัตรของ ${currentUser.email}`}
+                  ? currentFamily
+                    ? `รวมบัญชีที่แชร์ในบ้าน (${currentFamily.memberEmails.length} คน)`
+                    : 'คุณยังไม่ได้สร้างหรือเข้าร่วมบ้าน (ไปที่แท็บ คนในบ้าน)'
+                  : currentUser.email}
               </div>
             </div>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            {/* View Mode Switcher */}
             <div className="mode-switcher">
               <button
                 type="button"
@@ -1119,9 +1222,8 @@ export default function MoneyAppPage() {
               type="button"
               onClick={handleLogout}
               className="btn btn-outline btn-sm"
-              title="สลับบัญชี Gmail"
             >
-              🔄 สลับ Gmail
+              ออกจากระบบ
             </button>
           </div>
         </header>
@@ -1132,7 +1234,6 @@ export default function MoneyAppPage() {
           {/* ================================================================= */}
           {activeTab === 'dashboard' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
-              {/* Hero Net Worth Banner */}
               <div className={viewMode === 'family' ? 'hero-card-family' : 'hero-card'}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 16 }}>
                   <div>
@@ -1173,7 +1274,6 @@ export default function MoneyAppPage() {
                   </div>
                 </div>
 
-                {/* 4 Key Pillars inside Hero */}
                 <div className="grid-4" style={{ marginTop: 22 }}>
                   <div style={{ background: 'rgba(255,255,255,0.12)', padding: 14, borderRadius: 14 }}>
                     <div style={{ fontSize: '0.76rem', opacity: 0.85 }}>🏦 เงินสด & ธนาคารรวม</div>
@@ -1202,7 +1302,6 @@ export default function MoneyAppPage() {
                 </div>
               </div>
 
-              {/* Quick Section: Asset Accounts & Credit Cards side by side */}
               <div className="grid-2">
                 {/* Asset Wallets */}
                 <div className="card">
@@ -1277,7 +1376,7 @@ export default function MoneyAppPage() {
                   </div>
                 </div>
 
-                {/* Credit Cards & BNPL (ใช้ก่อนจ่ายทีหลัง) */}
+                {/* Credit Cards & BNPL */}
                 <div className="card">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
                     <div>
@@ -1296,70 +1395,76 @@ export default function MoneyAppPage() {
                     </button>
                   </div>
 
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    {creditAccounts.map((card) => {
-                      const available = Math.max(0, Number(card.creditLimit) - Number(card.usedAmount));
-                      const usagePct =
-                        card.creditLimit > 0
-                          ? Math.min(100, Math.round((card.usedAmount / card.creditLimit) * 100))
-                          : 0;
-                      return (
-                        <div
-                          key={card.id}
-                          style={{
-                            padding: 14,
-                            borderRadius: 14,
-                            border: '1px solid #e2e8f0',
-                            background: '#fff',
-                          }}
-                        >
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-                            <div>
-                              <div style={{ fontWeight: 700, fontSize: '0.95rem', display: 'flex', alignItems: 'center', gap: 6 }}>
-                                <span>{ACCOUNT_TYPE_META[card.type]?.icon}</span>
-                                {card.name}
-                                {card.isSharedWithFamily && (
-                                  <span className="badge badge-pink">🏠 แชร์บ้าน</span>
-                                )}
+                  {creditAccounts.length === 0 ? (
+                    <div style={{ padding: 24, textAlign: 'center', color: '#64748b', fontSize: '0.88rem' }}>
+                      ยังไม่มีบัตรเครดิตหรือสินเชื่อใช้ก่อนจ่ายทีหลัง กดปุ่ม <strong>&ldquo;＋ เพิ่มบัตร/PayLater&rdquo;</strong> ด้านบนเพื่อเพิ่มได้เลย
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                      {creditAccounts.map((card) => {
+                        const available = Math.max(0, Number(card.creditLimit) - Number(card.usedAmount));
+                        const usagePct =
+                          card.creditLimit > 0
+                            ? Math.min(100, Math.round((card.usedAmount / card.creditLimit) * 100))
+                            : 0;
+                        return (
+                          <div
+                            key={card.id}
+                            style={{
+                              padding: 14,
+                              borderRadius: 14,
+                              border: '1px solid #e2e8f0',
+                              background: '#fff',
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                              <div>
+                                <div style={{ fontWeight: 700, fontSize: '0.95rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <span>{ACCOUNT_TYPE_META[card.type]?.icon}</span>
+                                  {card.name}
+                                  {card.isSharedWithFamily && (
+                                    <span className="badge badge-pink">🏠 แชร์บ้าน</span>
+                                  )}
+                                </div>
+                                <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                                  สรุปยอดวันที่ {card.statementDay} • จ่ายวันที่ {card.dueDay} • {card.ownerName}
+                                </div>
                               </div>
-                              <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
-                                สรุปยอดวันที่ {card.statementDay} • จ่ายวันที่ {card.dueDay} • {card.ownerName}
-                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowPayCardModal(card);
+                                  setPayCardAmount(String(card.usedAmount));
+                                  setPayCardFromAccId(assetAccounts[0]?.id || '');
+                                }}
+                                className="btn btn-primary btn-sm"
+                              >
+                                จ่ายบิลบัตร
+                              </button>
                             </div>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setShowPayCardModal(card);
-                                setPayCardAmount(String(card.usedAmount));
-                                setPayCardFromAccId(assetAccounts[0]?.id || '');
-                              }}
-                              className="btn btn-primary btn-sm"
-                            >
-                              จ่ายบิลบัตร
-                            </button>
-                          </div>
 
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: 6 }}>
-                            <span>
-                              รูดใช้ไป: <strong style={{ color: '#dc2626' }}>{formatTHB(card.usedAmount)}</strong>
-                            </span>
-                            <span>
-                              วงเงินคงเหลือ: <strong style={{ color: '#059669' }}>{formatTHB(available)}</strong>
-                            </span>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: 6 }}>
+                              <span>
+                                รูดใช้ไป: <strong style={{ color: '#dc2626' }}>{formatTHB(card.usedAmount)}</strong>
+                              </span>
+                              <span>
+                                วงเงินคงเหลือ: <strong style={{ color: '#059669' }}>{formatTHB(available)}</strong>
+                              </span>
+                            </div>
+                            <div className="progress-track">
+                              <div
+                                className="progress-fill"
+                                style={{
+                                  width: `${usagePct}%`,
+                                  background: usagePct > 80 ? '#ef4444' : '#4f46e5',
+                                }}
+                              />
+                            </div>
                           </div>
-                          <div className="progress-track">
-                            <div
-                              className="progress-fill"
-                              style={{
-                                width: `${usagePct}%`,
-                                background: usagePct > 80 ? '#ef4444' : '#4f46e5',
-                              }}
-                            />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1383,7 +1488,7 @@ export default function MoneyAppPage() {
 
                 {visibleTransactions.length === 0 ? (
                   <div style={{ textAlign: 'center', padding: 28, color: '#64748b' }}>
-                    ยังไม่มีรายการบันทึก กดปุ่ม &ldquo;＋ เพิ่มรายการ&rdquo; เพื่อเริ่มต้นได้เลย
+                    ยังไม่มีรายการบันทึก กดปุ่ม &ldquo;＋ เพิ่มรายการ&rdquo; เพื่อเริ่มต้นจดรายรับ-รายจ่ายได้เลย
                   </div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -1461,7 +1566,7 @@ export default function MoneyAppPage() {
           )}
 
           {/* ================================================================= */}
-          {/* TAB 2: ACCOUNTS, CREDIT CARDS & INSTALLMENTS (บัญชี & บัตรเครดิต) */}
+          {/* TAB 2: ACCOUNTS, CREDIT CARDS & INSTALLMENTS */}
           {/* ================================================================= */}
           {activeTab === 'accounts' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
@@ -1492,92 +1597,97 @@ export default function MoneyAppPage() {
                 </div>
               </div>
 
-              {/* Credit Card Visual Cards */}
               <div>
                 <h2 style={{ fontSize: '1.05rem', fontWeight: 800, marginBottom: 12 }}>
                   ⚡ บัตรเครดิต & สินเชื่อใช้ก่อนจ่ายทีหลัง (Credit Card / BNPL)
                 </h2>
-                <div className="grid-3">
-                  {creditAccounts.map((card) => {
-                    const available = Math.max(0, Number(card.creditLimit) - Number(card.usedAmount));
-                    const usagePct =
-                      card.creditLimit > 0
-                        ? Math.min(100, Math.round((card.usedAmount / card.creditLimit) * 100))
-                        : 0;
-                    return (
-                      <div
-                        key={card.id}
-                        className="credit-card-visual"
-                        style={{
-                          background: `linear-gradient(135deg, ${card.color || '#1e293b'} 0%, #0f172a 100%)`,
-                        }}
-                      >
-                        <div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span className="badge" style={{ background: 'rgba(255,255,255,0.2)', color: '#fff' }}>
-                              {ACCOUNT_TYPE_META[card.type]?.badge}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => handleToggleAccountShare(card.id)}
-                              className="badge"
-                              style={{
-                                background: card.isSharedWithFamily ? '#ec4899' : 'rgba(255,255,255,0.15)',
-                                color: '#fff',
-                                border: 'none',
-                                cursor: 'pointer',
-                              }}
-                            >
-                              {card.isSharedWithFamily ? '🏠 แชร์กับบ้าน' : '🔒 ส่วนตัว (กดเพื่อแชร์)'}
-                            </button>
+                {creditAccounts.length === 0 ? (
+                  <div className="card" style={{ textAlign: 'center', color: '#64748b', padding: 28 }}>
+                    ยังไม่มีบัตรเครดิต กดปุ่ม <strong>&ldquo;＋ เพิ่มบัญชี / บัตรเครดิต&rdquo;</strong> เพื่อสร้างบัตรใบแรกของคุณได้เลย
+                  </div>
+                ) : (
+                  <div className="grid-3">
+                    {creditAccounts.map((card) => {
+                      const available = Math.max(0, Number(card.creditLimit) - Number(card.usedAmount));
+                      const usagePct =
+                        card.creditLimit > 0
+                          ? Math.min(100, Math.round((card.usedAmount / card.creditLimit) * 100))
+                          : 0;
+                      return (
+                        <div
+                          key={card.id}
+                          className="credit-card-visual"
+                          style={{
+                            background: `linear-gradient(135deg, ${card.color || '#1e293b'} 0%, #0f172a 100%)`,
+                          }}
+                        >
+                          <div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span className="badge" style={{ background: 'rgba(255,255,255,0.2)', color: '#fff' }}>
+                                {ACCOUNT_TYPE_META[card.type]?.badge}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleToggleAccountShare(card.id)}
+                                className="badge"
+                                style={{
+                                  background: card.isSharedWithFamily ? '#ec4899' : 'rgba(255,255,255,0.15)',
+                                  color: '#fff',
+                                  border: 'none',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                {card.isSharedWithFamily ? '🏠 แชร์กับบ้าน' : '🔒 ส่วนตัว (กดเพื่อแชร์)'}
+                              </button>
+                            </div>
+                            <div style={{ fontSize: '1.15rem', fontWeight: 800, marginTop: 12 }}>
+                              {card.name}
+                            </div>
+                            <div style={{ fontSize: '0.78rem', opacity: 0.8 }}>
+                              ผู้ถือบัตร: {card.ownerName} • สรุปบิลวันที่ {card.statementDay} / จ่ายวันที่ {card.dueDay}
+                            </div>
                           </div>
-                          <div style={{ fontSize: '1.15rem', fontWeight: 800, marginTop: 12 }}>
-                            {card.name}
-                          </div>
-                          <div style={{ fontSize: '0.78rem', opacity: 0.8 }}>
-                            ผู้ถือบัตร: {card.ownerName} • สรุปบิลวันที่ {card.statementDay} / จ่ายวันที่ {card.dueDay}
-                          </div>
-                        </div>
 
-                        <div style={{ marginTop: 18 }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: 6 }}>
-                            <span>ยอดใช้ไป: <strong>{formatTHB(card.usedAmount)}</strong></span>
-                            <span>วงเงินเหลือ: <strong>{formatTHB(available)}</strong></span>
-                          </div>
-                          <div className="progress-track" style={{ background: 'rgba(255,255,255,0.2)' }}>
-                            <div
-                              className="progress-fill"
-                              style={{
-                                width: `${usagePct}%`,
-                                background: usagePct > 80 ? '#f87171' : '#38bdf8',
-                              }}
-                            />
-                          </div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
-                            <span style={{ fontSize: '0.75rem', opacity: 0.8 }}>
-                              วงเงินรวม {formatTHB(card.creditLimit)}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setShowPayCardModal(card);
-                                setPayCardAmount(String(card.usedAmount));
-                                setPayCardFromAccId(assetAccounts[0]?.id || '');
-                              }}
-                              className="btn btn-sm"
-                              style={{ background: '#ffffff', color: '#0f172a', fontWeight: 700 }}
-                            >
-                              💳 โอนจ่ายบิลบัตร
-                            </button>
+                          <div style={{ marginTop: 18 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: 6 }}>
+                              <span>ยอดใช้ไป: <strong>{formatTHB(card.usedAmount)}</strong></span>
+                              <span>วงเงินเหลือ: <strong>{formatTHB(available)}</strong></span>
+                            </div>
+                            <div className="progress-track" style={{ background: 'rgba(255,255,255,0.2)' }}>
+                              <div
+                                className="progress-fill"
+                                style={{
+                                  width: `${usagePct}%`,
+                                  background: usagePct > 80 ? '#f87171' : '#38bdf8',
+                                }}
+                              />
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
+                              <span style={{ fontSize: '0.75rem', opacity: 0.8 }}>
+                                วงเงินรวม {formatTHB(card.creditLimit)}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowPayCardModal(card);
+                                  setPayCardAmount(String(card.usedAmount));
+                                  setPayCardFromAccId(assetAccounts[0]?.id || '');
+                                }}
+                                className="btn btn-sm"
+                                style={{ background: '#ffffff', color: '#0f172a', fontWeight: 700 }}
+                              >
+                                💳 โอนจ่ายบิลบัตร
+                              </button>
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
-              {/* Active Installments (ระบบผ่อนชำระรายเดือน) */}
+              {/* Active Installments */}
               <div className="card">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
                   <div>
@@ -1704,7 +1814,7 @@ export default function MoneyAppPage() {
           )}
 
           {/* ================================================================= */}
-          {/* TAB 3: LOANS & DEBT TRACKING (ยืมเงิน & ให้คนอื่นยืมเงิน) */}
+          {/* TAB 3: LOANS & DEBT TRACKING */}
           {/* ================================================================= */}
           {activeTab === 'loans' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
@@ -1730,151 +1840,145 @@ export default function MoneyAppPage() {
               </div>
 
               <div className="grid-2">
-                {/* LEND: ลูกหนี้ของเรา (เราให้คนอื่นยืม) */}
+                {/* LEND */}
                 <div className="card">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-                    <div>
-                      <h2 style={{ fontSize: '1.05rem', fontWeight: 800, color: '#065f46' }}>
-                        🟢 ลูกหนี้ (เราให้คนอื่นยืม - รอรับคืน)
-                      </h2>
-                      <p style={{ fontSize: '0.8rem', color: '#64748b' }}>
-                        ยอดรอรับคืนทั้งหมด: <strong>{formatTHB(summary.totalReceivableLoans)}</strong>
-                      </p>
-                    </div>
+                  <div style={{ marginBottom: 14 }}>
+                    <h2 style={{ fontSize: '1.05rem', fontWeight: 800, color: '#065f46' }}>
+                      🟢 ลูกหนี้ (เราให้คนอื่นยืม - รอรับคืน)
+                    </h2>
+                    <p style={{ fontSize: '0.8rem', color: '#64748b' }}>
+                      ยอดรอรับคืนทั้งหมด: <strong>{formatTHB(summary.totalReceivableLoans)}</strong>
+                    </p>
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    {visibleLoans
-                      .filter((l) => l.loanType === 'lend')
-                      .map((loan) => {
-                        const remaining = Math.max(0, Number(loan.totalAmount) - Number(loan.paidAmount));
-                        const pct = Math.min(
-                          100,
-                          Math.round((Number(loan.paidAmount) / Number(loan.totalAmount)) * 100)
-                        );
-                        return (
-                          <div
-                            key={loan.id}
-                            style={{
-                              padding: 16,
-                              borderRadius: 16,
-                              border: '1px solid #d1fae5',
-                              background: loan.status === 'settled' ? '#f8fafc' : '#ecfdf5',
-                            }}
-                          >
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-                              <div>
-                                <div style={{ fontWeight: 800, fontSize: '1rem', display: 'flex', alignItems: 'center', gap: 6 }}>
-                                  👤 {loan.personName}
-                                  {loan.status === 'settled' ? (
-                                    <span className="badge badge-emerald">✅ คืนครบแล้ว</span>
-                                  ) : (
-                                    <span className="badge badge-amber">ค้าง {formatTHB(remaining)}</span>
-                                  )}
+                    {visibleLoans.filter((l) => l.loanType === 'lend').length === 0 ? (
+                      <div style={{ padding: 20, textAlign: 'center', color: '#64748b', fontSize: '0.86rem' }}>
+                        ยังไม่มีรายการให้ยืมเงิน
+                      </div>
+                    ) : (
+                      visibleLoans
+                        .filter((l) => l.loanType === 'lend')
+                        .map((loan) => {
+                          const remaining = Math.max(0, Number(loan.totalAmount) - Number(loan.paidAmount));
+                          const pct = Math.min(
+                            100,
+                            Math.round((Number(loan.paidAmount) / Number(loan.totalAmount)) * 100)
+                          );
+                          return (
+                            <div
+                              key={loan.id}
+                              style={{
+                                padding: 16,
+                                borderRadius: 16,
+                                border: '1px solid #d1fae5',
+                                background: loan.status === 'settled' ? '#f8fafc' : '#ecfdf5',
+                              }}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                                <div>
+                                  <div style={{ fontWeight: 800, fontSize: '1rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    👤 {loan.personName}
+                                    {loan.status === 'settled' ? (
+                                      <span className="badge badge-emerald">✅ คืนครบแล้ว</span>
+                                    ) : (
+                                      <span className="badge badge-amber">ค้าง {formatTHB(remaining)}</span>
+                                    )}
+                                  </div>
+                                  <div style={{ fontSize: '0.8rem', color: '#475569', marginTop: 2 }}>
+                                    {loan.note} • นัดคืน: {loan.dueDate || '-'}
+                                  </div>
                                 </div>
-                                <div style={{ fontSize: '0.8rem', color: '#475569', marginTop: 2 }}>
-                                  {loan.note} • นัดคืน: {loan.dueDate || '-'}
-                                </div>
-                              </div>
-                              <div style={{ display: 'flex', gap: 6 }}>
-                                <button
-                                  type="button"
-                                  onClick={() => handleCopyLoanLineMessage(loan)}
-                                  className="btn btn-outline btn-sm"
-                                  title="คัดลอกส่ง LINE"
-                                >
-                                  📋 ส่ง LINE
-                                </button>
-                                {loan.status === 'active' && (
+                                <div style={{ display: 'flex', gap: 6 }}>
                                   <button
                                     type="button"
-                                    onClick={() => {
-                                      setShowRepayLoanModal(loan);
-                                      setRepayAmount(String(remaining));
-                                      setRepayAccountId(assetAccounts[0]?.id || loan.accountId);
-                                    }}
-                                    className="btn btn-success btn-sm"
+                                    onClick={() => handleCopyLoanLineMessage(loan)}
+                                    className="btn btn-outline btn-sm"
                                   >
-                                    รับเงินคืน
+                                    📋 ส่ง LINE
                                   </button>
-                                )}
+                                  {loan.status === 'active' && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setShowRepayLoanModal(loan);
+                                        setRepayAmount(String(remaining));
+                                        setRepayAccountId(assetAccounts[0]?.id || loan.accountId);
+                                      }}
+                                      className="btn btn-success btn-sm"
+                                    >
+                                      รับเงินคืน
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: 6 }}>
+                                <span>คืนมาแล้ว: {formatTHB(loan.paidAmount)}</span>
+                                <span>จากยอดยืมรวม: {formatTHB(loan.totalAmount)} ({pct}%)</span>
+                              </div>
+                              <div className="progress-track">
+                                <div
+                                  className="progress-fill"
+                                  style={{ width: `${pct}%`, background: '#10b981' }}
+                                />
                               </div>
                             </div>
-
-                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: 6 }}>
-                              <span>คืนมาแล้ว: {formatTHB(loan.paidAmount)}</span>
-                              <span>จากยอดยืมรวม: {formatTHB(loan.totalAmount)} ({pct}%)</span>
-                            </div>
-                            <div className="progress-track">
-                              <div
-                                className="progress-fill"
-                                style={{ width: `${pct}%`, background: '#10b981' }}
-                              />
-                            </div>
-
-                            {loan.repayments?.length > 0 && (
-                              <div style={{ marginTop: 10, fontSize: '0.76rem', color: '#475569' }}>
-                                <strong>ประวัติการคืนเงิน:</strong>
-                                {loan.repayments.map((r) => (
-                                  <div key={r.id}>
-                                    • {r.date}: +{formatTHB(r.amount)} ({r.note})
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
+                          );
+                        })
+                    )}
                   </div>
                 </div>
 
-                {/* BORROW: เจ้าหนี้ของเรา (เรายืมคนอื่นมา) */}
+                {/* BORROW */}
                 <div className="card">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-                    <div>
-                      <h2 style={{ fontSize: '1.05rem', fontWeight: 800, color: '#92400e' }}>
-                        🟠 เจ้าหนี้ (เรายืมคนอื่นมา - ต้องจ่ายคืน)
-                      </h2>
-                      <p style={{ fontSize: '0.8rem', color: '#64748b' }}>
-                        ยอดที่ต้องคืนทั้งหมด: <strong>{formatTHB(summary.totalPayableLoans)}</strong>
-                      </p>
-                    </div>
+                  <div style={{ marginBottom: 14 }}>
+                    <h2 style={{ fontSize: '1.05rem', fontWeight: 800, color: '#92400e' }}>
+                      🟠 เจ้าหนี้ (เรายืมคนอื่นมา - ต้องจ่ายคืน)
+                    </h2>
+                    <p style={{ fontSize: '0.8rem', color: '#64748b' }}>
+                      ยอดที่ต้องคืนทั้งหมด: <strong>{formatTHB(summary.totalPayableLoans)}</strong>
+                    </p>
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    {visibleLoans
-                      .filter((l) => l.loanType === 'borrow')
-                      .map((loan) => {
-                        const remaining = Math.max(0, Number(loan.totalAmount) - Number(loan.paidAmount));
-                        const pct = Math.min(
-                          100,
-                          Math.round((Number(loan.paidAmount) / Number(loan.totalAmount)) * 100)
-                        );
-                        return (
-                          <div
-                            key={loan.id}
-                            style={{
-                              padding: 16,
-                              borderRadius: 16,
-                              border: '1px solid #fde68a',
-                              background: loan.status === 'settled' ? '#f8fafc' : '#fffbeb',
-                            }}
-                          >
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-                              <div>
-                                <div style={{ fontWeight: 800, fontSize: '1rem', display: 'flex', alignItems: 'center', gap: 6 }}>
-                                  👤 {loan.personName}
-                                  {loan.status === 'settled' ? (
-                                    <span className="badge badge-emerald">✅ จ่ายคืนครบแล้ว</span>
-                                  ) : (
-                                    <span className="badge badge-red">เหลือคืน {formatTHB(remaining)}</span>
-                                  )}
+                    {visibleLoans.filter((l) => l.loanType === 'borrow').length === 0 ? (
+                      <div style={{ padding: 20, textAlign: 'center', color: '#64748b', fontSize: '0.86rem' }}>
+                        ยังไม่มีรายการยืมเงิน
+                      </div>
+                    ) : (
+                      visibleLoans
+                        .filter((l) => l.loanType === 'borrow')
+                        .map((loan) => {
+                          const remaining = Math.max(0, Number(loan.totalAmount) - Number(loan.paidAmount));
+                          const pct = Math.min(
+                            100,
+                            Math.round((Number(loan.paidAmount) / Number(loan.totalAmount)) * 100)
+                          );
+                          return (
+                            <div
+                              key={loan.id}
+                              style={{
+                                padding: 16,
+                                borderRadius: 16,
+                                border: '1px solid #fde68a',
+                                background: loan.status === 'settled' ? '#f8fafc' : '#fffbeb',
+                              }}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                                <div>
+                                  <div style={{ fontWeight: 800, fontSize: '1rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    👤 {loan.personName}
+                                    {loan.status === 'settled' ? (
+                                      <span className="badge badge-emerald">✅ จ่ายคืนครบแล้ว</span>
+                                    ) : (
+                                      <span className="badge badge-red">เหลือคืน {formatTHB(remaining)}</span>
+                                    )}
+                                  </div>
+                                  <div style={{ fontSize: '0.8rem', color: '#475569', marginTop: 2 }}>
+                                    {loan.note} • กำหนดคืน: {loan.dueDate || '-'}
+                                  </div>
                                 </div>
-                                <div style={{ fontSize: '0.8rem', color: '#475569', marginTop: 2 }}>
-                                  {loan.note} • กำหนดคืน: {loan.dueDate || '-'}
-                                </div>
-                              </div>
-                              <div style={{ display: 'flex', gap: 6 }}>
                                 {loan.status === 'active' && (
                                   <button
                                     type="button"
@@ -1889,32 +1993,21 @@ export default function MoneyAppPage() {
                                   </button>
                                 )}
                               </div>
-                            </div>
 
-                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: 6 }}>
-                              <span>จ่ายคืนแล้ว: {formatTHB(loan.paidAmount)}</span>
-                              <span>จากยอดรวม: {formatTHB(loan.totalAmount)} ({pct}%)</span>
-                            </div>
-                            <div className="progress-track">
-                              <div
-                                className="progress-fill"
-                                style={{ width: `${pct}%`, background: '#f59e0b' }}
-                              />
-                            </div>
-
-                            {loan.repayments?.length > 0 && (
-                              <div style={{ marginTop: 10, fontSize: '0.76rem', color: '#475569' }}>
-                                <strong>ประวัติการจ่ายคืน:</strong>
-                                {loan.repayments.map((r) => (
-                                  <div key={r.id}>
-                                    • {r.date}: -{formatTHB(r.amount)} ({r.note})
-                                  </div>
-                                ))}
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: 6 }}>
+                                <span>จ่ายคืนแล้ว: {formatTHB(loan.paidAmount)}</span>
+                                <span>จากยอดรวม: {formatTHB(loan.totalAmount)} ({pct}%)</span>
                               </div>
-                            )}
-                          </div>
-                        );
-                      })}
+                              <div className="progress-track">
+                                <div
+                                  className="progress-fill"
+                                  style={{ width: `${pct}%`, background: '#f59e0b' }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })
+                    )}
                   </div>
                 </div>
               </div>
@@ -1922,7 +2015,7 @@ export default function MoneyAppPage() {
           )}
 
           {/* ================================================================= */}
-          {/* TAB 4: DESKTOP ANALYTICS & REPORTS (รายงานวิเคราะห์) */}
+          {/* TAB 4: DESKTOP ANALYTICS & REPORTS */}
           {/* ================================================================= */}
           {activeTab === 'reports' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
@@ -1968,12 +2061,15 @@ export default function MoneyAppPage() {
                 </div>
               </div>
 
-              <div className="grid-2">
-                {/* Expense by Category Breakdown */}
-                <div className="card">
-                  <h2 style={{ fontSize: '1.05rem', fontWeight: 800, marginBottom: 14 }}>
-                    🍩 สัดส่วนรายจ่ายแยกตามหมวดหมู่
-                  </h2>
+              <div className="card">
+                <h2 style={{ fontSize: '1.05rem', fontWeight: 800, marginBottom: 14 }}>
+                  🍩 สัดส่วนรายจ่ายแยกตามหมวดหมู่
+                </h2>
+                {summary.totalExpense <= 0 ? (
+                  <div style={{ padding: 20, textAlign: 'center', color: '#64748b' }}>
+                    ยังไม่มีรายการรายจ่ายในเดือนนี้
+                  </div>
+                ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                     {EXPENSE_CATEGORIES.map((cat) => {
                       const catSum = visibleTransactions
@@ -2004,48 +2100,7 @@ export default function MoneyAppPage() {
                       );
                     })}
                   </div>
-                </div>
-
-                {/* Member Breakdown (Who spent / contributed in Family) */}
-                <div className="card">
-                  <h2 style={{ fontSize: '1.05rem', fontWeight: 800, marginBottom: 14 }}>
-                    👨‍👩‍👧 สรุปยอดตามสมาชิกในบ้าน (Gmail)
-                  </h2>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    {appState.users.map((u) => {
-                      const userAssets = visibleAccounts
-                        .filter((a) => a.ownerEmail === u.email && !ACCOUNT_TYPE_META[a.type]?.isLiability)
-                        .reduce((s, a) => s + Number(a.balance || 0), 0);
-                      const userCardDebt = visibleAccounts
-                        .filter((a) => a.ownerEmail === u.email && ACCOUNT_TYPE_META[a.type]?.isLiability)
-                        .reduce((s, a) => s + Number(a.usedAmount || 0), 0);
-                      const userExpense = visibleTransactions
-                        .filter((t) => t.ownerEmail === u.email && t.type === 'expense')
-                        .reduce((s, t) => s + Number(t.amount || 0), 0);
-
-                      return (
-                        <div
-                          key={u.email}
-                          style={{
-                            padding: 14,
-                            borderRadius: 14,
-                            border: '1px solid #e2e8f0',
-                            background: '#f8fafc',
-                          }}
-                        >
-                          <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>
-                            👤 {u.name} <span style={{ color: '#64748b', fontWeight: 400 }}>({u.email})</span>
-                          </div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, fontSize: '0.82rem', flexWrap: 'wrap', gap: 8 }}>
-                            <span>สินทรัพย์: <strong style={{ color: '#059669' }}>{formatTHB(userAssets)}</strong></span>
-                            <span>หนี้บัตร: <strong style={{ color: '#dc2626' }}>{formatTHB(userCardDebt)}</strong></span>
-                            <span>จ่ายเดือนนี้: <strong>{formatTHB(userExpense)}</strong></span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                )}
               </div>
             </div>
           )}
@@ -2060,18 +2115,58 @@ export default function MoneyAppPage() {
                   🏠 พื้นที่ครอบครัว & แชร์ยอดรวมกับคนในบ้าน
                 </h1>
                 <p style={{ fontSize: '0.86rem', color: '#64748b' }}>
-                  ชวนคนในบ้านด้วย Gmail หรือรหัสเข้าบ้าน และเลือกเปิด/ปิดได้ว่าบัญชีใบไหนอยากแชร์ให้คนในบ้านเห็นยอดรวม
+                  สร้างบ้านของคุณเพื่อรับรหัสเชิญ หรือกรอกรหัสบ้านเพื่อแชร์ยอดรวมกับคนในครอบครัว
                 </p>
               </div>
 
               <div className="grid-2">
-                {/* Family Group Info & Invite by Gmail */}
                 <div className="card">
-                  <h2 style={{ fontSize: '1.05rem', fontWeight: 800, marginBottom: 8 }}>
-                    👨‍👩‍👧‍👦 บ้านปัจจุบันของคุณ: {currentFamily?.name || 'ยังไม่ได้อยู่ในบ้าน'}
-                  </h2>
-                  {currentFamily && (
+                  {!currentFamily ? (
+                    <div>
+                      <h2 style={{ fontSize: '1.05rem', fontWeight: 800, marginBottom: 12 }}>
+                        🏡 สร้างพื้นที่ครอบครัวใหม่ หรือ เข้าร่วมบ้าน
+                      </h2>
+                      <form onSubmit={handleCreateFamilyGroup} style={{ marginBottom: 20 }}>
+                        <div className="form-group">
+                          <label className="form-label">ตั้งชื่อบ้านของคุณ</label>
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            <input
+                              type="text"
+                              className="form-input"
+                              placeholder={`เช่น บ้านของ ${currentUser.name}`}
+                              value={newFamilyName}
+                              onChange={(e) => setNewFamilyName(e.target.value)}
+                            />
+                            <button type="submit" className="btn btn-primary">
+                              สร้างบ้าน
+                            </button>
+                          </div>
+                        </div>
+                      </form>
+
+                      <form onSubmit={handleJoinFamilyByCode}>
+                        <div className="form-group">
+                          <label className="form-label">หรือมีรหัสเข้าบ้านของคนในครอบครัวแล้ว?</label>
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            <input
+                              type="text"
+                              className="form-input"
+                              placeholder="เช่น HOME-1234"
+                              value={joinCodeInput}
+                              onChange={(e) => setJoinCodeInput(e.target.value)}
+                            />
+                            <button type="submit" className="btn btn-outline">
+                              เข้าร่วมบ้าน
+                            </button>
+                          </div>
+                        </div>
+                      </form>
+                    </div>
+                  ) : (
                     <>
+                      <h2 style={{ fontSize: '1.05rem', fontWeight: 800, marginBottom: 10 }}>
+                        👨‍👩‍👧‍👦 บ้านของคุณ: {currentFamily.name}
+                      </h2>
                       <div
                         style={{
                           padding: 14,
@@ -2111,36 +2206,31 @@ export default function MoneyAppPage() {
                           สมาชิกในบ้าน ({currentFamily.memberEmails.length} คน):
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                          {currentFamily.memberEmails.map((email) => {
-                            const memberObj = appState.users.find((u) => u.email === email);
-                            return (
-                              <div
-                                key={email}
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'space-between',
-                                  padding: '8px 12px',
-                                  borderRadius: 10,
-                                  background: '#f8fafc',
-                                  border: '1px solid #e2e8f0',
-                                }}
-                              >
-                                <span>
-                                  <strong>{memberObj?.name || email.split('@')[0]}</strong> ({email})
-                                </span>
-                                {email === currentUser.email && (
-                                  <span className="badge badge-indigo">คุณ</span>
-                                )}
-                              </div>
-                            );
-                          })}
+                          {currentFamily.memberEmails.map((email) => (
+                            <div
+                              key={email}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                padding: '8px 12px',
+                                borderRadius: 10,
+                                background: '#f8fafc',
+                                border: '1px solid #e2e8f0',
+                              }}
+                            >
+                              <span>{email}</span>
+                              {email === currentUser.email && (
+                                <span className="badge badge-indigo">คุณ</span>
+                              )}
+                            </div>
+                          ))}
                         </div>
                       </div>
 
                       <form onSubmit={handleInviteFamilyEmail}>
                         <div className="form-group">
-                          <label className="form-label">ชวนคนในบ้านเพิ่มด้วย Gmail</label>
+                          <label className="form-label">เพิ่ม Gmail ของคนในบ้าน</label>
                           <div style={{ display: 'flex', gap: 8 }}>
                             <input
                               type="email"
@@ -2163,7 +2253,7 @@ export default function MoneyAppPage() {
                 {/* Privacy Toggle for My Accounts */}
                 <div className="card">
                   <h2 style={{ fontSize: '1.05rem', fontWeight: 800, marginBottom: 6 }}>
-                    🔒 ตั้งค่าการแชร์บัญชีของฉัน ({currentUser.name})
+                    🔒 ตั้งค่าการแชร์บัญชีของฉัน ({currentUser.email})
                   </h2>
                   <p style={{ fontSize: '0.8rem', color: '#64748b', marginBottom: 14 }}>
                     เลือกเปิด <strong>&ldquo;🏠 แชร์กับบ้าน&rdquo;</strong> เฉพาะบัญชีหรือบัตรเครดิตที่ต้องการให้นำไปคิดยอดรวมกับคนในบ้าน
@@ -2205,24 +2295,6 @@ export default function MoneyAppPage() {
                           </button>
                         </div>
                       ))}
-                  </div>
-
-                  <div style={{ marginTop: 22, paddingTop: 16, borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: '0.8rem', color: '#64748b' }}>
-                      ต้องการรีเซ็ตข้อมูลตัวอย่างเริ่มต้นใหม่?
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const fresh = createInitialSeedData();
-                        saveAppState(fresh);
-                        setAppState(fresh);
-                        showToast('รีเซ็ตข้อมูลตัวอย่างเริ่มต้นเรียบร้อยแล้ว');
-                      }}
-                      className="btn btn-outline btn-sm"
-                    >
-                      🔄 รีเซ็ตข้อมูลตัวอย่าง
-                    </button>
                   </div>
                 </div>
               </div>
@@ -2356,7 +2428,7 @@ export default function MoneyAppPage() {
                 >
                   {visibleAccounts.map((a) => (
                     <option key={a.id} value={a.id}>
-                      {ACCOUNT_TYPE_META[a.type]?.icon} {a.name} ({a.ownerName})
+                      {ACCOUNT_TYPE_META[a.type]?.icon} {a.name}
                     </option>
                   ))}
                 </select>
@@ -2398,7 +2470,6 @@ export default function MoneyAppPage() {
                 </div>
               )}
 
-              {/* If paying with Credit Card or BNPL, allow choosing Installment! */}
               {txType === 'expense' &&
                 ACCOUNT_TYPE_META[appState.accounts.find((a) => a.id === txAccountId)?.type]
                   ?.isLiability && (
@@ -2480,7 +2551,7 @@ export default function MoneyAppPage() {
       )}
 
       {/* ===================================================================== */}
-      {/* MODAL 2: สร้างบัญชีใหม่ / บัตรเครดิต / ใช้ก่อนจ่ายทีหลัง (BNPL) */}
+      {/* MODAL 2: สร้างบัญชีใหม่ / บัตรเครดิต / PayLater */}
       {/* ===================================================================== */}
       {showAccountModal && (
         <div className="modal-backdrop" onClick={() => setShowAccountModal(false)}>
@@ -2605,7 +2676,7 @@ export default function MoneyAppPage() {
       )}
 
       {/* ===================================================================== */}
-      {/* MODAL 3: จ่ายบิลบัตรเครดิต / โปะยอด PayLater */}
+      {/* MODAL 3: จ่ายบิลบัตรเครดิต */}
       {/* ===================================================================== */}
       {showPayCardModal && (
         <div className="modal-backdrop" onClick={() => setShowPayCardModal(null)}>
@@ -2618,10 +2689,6 @@ export default function MoneyAppPage() {
                 ✕
               </button>
             </div>
-
-            <p style={{ fontSize: '0.84rem', color: '#64748b', marginBottom: 14 }}>
-              ระบบจะหักเงินจากบัญชีธนาคารที่คุณเลือก ไปลดยอดหนี้ค้างชำระของบัตรเครดิตและคืนวงเงินให้ทันที (โดยไม่นับเป็นรายจ่ายซ้ำ)
-            </p>
 
             <form onSubmit={handlePayCreditCardBill}>
               <div className="form-group">
@@ -2663,7 +2730,7 @@ export default function MoneyAppPage() {
       )}
 
       {/* ===================================================================== */}
-      {/* MODAL 4: เพิ่มรายการผ่อนชำระ (Installment Plan) */}
+      {/* MODAL 4: เพิ่มรายการผ่อนชำระ */}
       {/* ===================================================================== */}
       {showInstallmentModal && (
         <div className="modal-backdrop" onClick={() => setShowInstallmentModal(false)}>
@@ -2880,7 +2947,7 @@ export default function MoneyAppPage() {
       )}
 
       {/* ===================================================================== */}
-      {/* MODAL 6: รับเงินคืน / จ่ายคืนหนี้ (ทยอยคืน หรือ คืนเต็มจำนวน) */}
+      {/* MODAL 6: รับเงินคืน / จ่ายคืนหนี้ */}
       {/* ===================================================================== */}
       {showRepayLoanModal && (
         <div className="modal-backdrop" onClick={() => setShowRepayLoanModal(null)}>
