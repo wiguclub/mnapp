@@ -1461,21 +1461,21 @@ export default function MoneyAppPage() {
             className={`sidebar-nav-btn ${activeTab === 'dashboard' ? 'active' : ''}`}
             onClick={() => setActiveTab('dashboard')}
           >
-            <span>📊</span> ภาพรวม (Dashboard)
+            <span>🗂️</span> รวมบัญชี (3 กลุ่มหลัก)
           </button>
           <button
             type="button"
             className={`sidebar-nav-btn ${activeTab === 'accounts' ? 'active' : ''}`}
             onClick={() => setActiveTab('accounts')}
           >
-            <span>💳</span> บัญชี & บัตรเครดิต ({visibleAccounts.length})
+            <span>💳</span> รายละเอียดบัตร & ผ่อนชำระ
           </button>
           <button
             type="button"
             className={`sidebar-nav-btn ${activeTab === 'loans' ? 'active' : ''}`}
             onClick={() => setActiveTab('loans')}
           >
-            <span>🤝</span> ยืมเงิน & ให้ยืม ({visibleLoans.filter((l) => l.status === 'active').length})
+            <span>🤝</span> ประวัติเจ้าหนี้ & ลูกหนี้
           </button>
           <button
             type="button"
@@ -1611,17 +1611,18 @@ export default function MoneyAppPage() {
 
         <main className="content-container">
           {/* ================================================================= */}
-          {/* TAB 1: DASHBOARD */}
+          {/* TAB 1: รวมบัญชี 3 กลุ่มหลัก (ที่เก็บตังค์ / ใช้ก่อนจ่าย / เจ้าหนี้-ลูกหนี้) */}
           {/* ================================================================= */}
           {activeTab === 'dashboard' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+              {/* Top Net Summary Card */}
               <div className={viewMode === 'family' ? 'hero-card-family' : 'hero-card'}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 16 }}>
                   <div>
-                    <div style={{ fontSize: '0.82rem', opacity: 0.85, fontWeight: 600, marginBottom: 4 }}>
+                    <div style={{ fontSize: '0.82rem', opacity: 0.9, fontWeight: 600, marginBottom: 4 }}>
                       {viewMode === 'family'
-                        ? '🏠 ความมั่งคั่งสุทธิรวมของบ้าน (สินทรัพย์ + เงินให้ยืม - หนี้บัตร - หนี้ยืม)'
-                        : '💎 ความมั่งคั่งสุทธิของคุณ (Net Worth)'}
+                        ? '🏠 ยอดสุทธิรวมของบ้าน (ที่เก็บตังค์ - ใช้ก่อนจ่าย + ลูกหนี้ - เจ้าหนี้)'
+                        : '💎 ยอดเงินสุทธิรวมทั้งหมด (Net Balance)'}
                     </div>
                     <div style={{ fontSize: '2.25rem', fontWeight: 800, letterSpacing: '-0.02em' }}>
                       {formatTHB(summary.netWorth)}
@@ -1634,7 +1635,7 @@ export default function MoneyAppPage() {
                       className="btn btn-sm"
                       style={{ background: 'rgba(255,255,255,0.2)', color: '#fff' }}
                     >
-                      ＋ รายรับ
+                      ＋ จดรายรับ
                     </button>
                     <button
                       type="button"
@@ -1642,65 +1643,91 @@ export default function MoneyAppPage() {
                       className="btn btn-sm"
                       style={{ background: '#ffffff', color: '#1e1b4b' }}
                     >
-                      💳 รูดบัตร / จ่ายเงิน
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => openCreateAccountModal('bank')}
-                      className="btn btn-sm"
-                      style={{ background: 'rgba(255,255,255,0.16)', color: '#fff' }}
-                    >
-                      ＋ เพิ่มบัญชี/บัตร
+                      💸 จดรายจ่าย / รูดบัตร
                     </button>
                   </div>
                 </div>
 
-                <div className="grid-4" style={{ marginTop: 22 }}>
-                  <div style={{ background: 'rgba(255,255,255,0.12)', padding: 14, borderRadius: 14 }}>
-                    <div style={{ fontSize: '0.76rem', opacity: 0.85 }}>🏦 เงินสด & ธนาคารรวม</div>
-                    <div style={{ fontSize: '1.2rem', fontWeight: 800, marginTop: 4 }}>
+                {/* 3 Group Summary Pills */}
+                <div className="grid-3" style={{ marginTop: 20 }}>
+                  <div style={{ background: 'rgba(255,255,255,0.14)', padding: 14, borderRadius: 14 }}>
+                    <div style={{ fontSize: '0.78rem', opacity: 0.9 }}>1️⃣ ยอดรวม Group ที่เก็บตังค์</div>
+                    <div style={{ fontSize: '1.3rem', fontWeight: 800, marginTop: 4, color: '#a7f3d0' }}>
                       {formatTHB(summary.totalAssets)}
                     </div>
                   </div>
-                  <div style={{ background: 'rgba(255,255,255,0.12)', padding: 14, borderRadius: 14 }}>
-                    <div style={{ fontSize: '0.76rem', opacity: 0.85 }}>💳 หนี้บัตรเครดิต & PayLater</div>
-                    <div style={{ fontSize: '1.2rem', fontWeight: 800, marginTop: 4, color: '#fecdd3' }}>
+                  <div style={{ background: 'rgba(255,255,255,0.14)', padding: 14, borderRadius: 14 }}>
+                    <div style={{ fontSize: '0.78rem', opacity: 0.9 }}>2️⃣ ยอดรวม Group ใช้ก่อนจ่าย</div>
+                    <div style={{ fontSize: '1.3rem', fontWeight: 800, marginTop: 4, color: '#fecdd3' }}>
                       -{formatTHB(summary.totalCreditUsed)}
                     </div>
                   </div>
-                  <div style={{ background: 'rgba(255,255,255,0.12)', padding: 14, borderRadius: 14 }}>
-                    <div style={{ fontSize: '0.76rem', opacity: 0.85 }}>🟢 รอคนคืนเงิน (ให้ยืม)</div>
-                    <div style={{ fontSize: '1.2rem', fontWeight: 800, marginTop: 4, color: '#a7f3d0' }}>
-                      +{formatTHB(summary.totalReceivableLoans)}
-                    </div>
-                  </div>
-                  <div style={{ background: 'rgba(255,255,255,0.12)', padding: 14, borderRadius: 14 }}>
-                    <div style={{ fontSize: '0.76rem', opacity: 0.85 }}>🟠 หนี้ที่ต้องคืนคนอื่น (ยืมมา)</div>
-                    <div style={{ fontSize: '1.2rem', fontWeight: 800, marginTop: 4, color: '#fde68a' }}>
-                      -{formatTHB(summary.totalPayableLoans)}
+                  <div style={{ background: 'rgba(255,255,255,0.14)', padding: 14, borderRadius: 14 }}>
+                    <div style={{ fontSize: '0.78rem', opacity: 0.9 }}>3️⃣ ยอดรวม เจ้าหนี้ / ลูกหนี้</div>
+                    <div style={{ fontSize: '1.05rem', fontWeight: 800, marginTop: 4 }}>
+                      <span style={{ color: '#a7f3d0' }}>ลูกหนี้ +{formatTHB(summary.totalReceivableLoans)}</span>
+                      {'  •  '}
+                      <span style={{ color: '#fde68a' }}>เจ้าหนี้ -{formatTHB(summary.totalPayableLoans)}</span>
                     </div>
                   </div>
                 </div>
               </div>
 
-              <div className="grid-2">
-                {/* Asset Wallets */}
-                <div className="card">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-                    <div>
-                      <h2 style={{ fontSize: '1.05rem', fontWeight: 800 }}>🏦 บัญชีเงินสด & ธนาคาร</h2>
-                      <p style={{ fontSize: '0.8rem', color: '#64748b' }}>กด ✏️ เพื่อแก้ไขชื่อหรือยอดเงินได้ทุกบัญชี</p>
+              {/* ============================================================= */}
+              {/* GROUP 1: ที่เก็บตังค์ (เห็นยอดรวม + สร้าง/แก้ไข/ลบ ตามใจได้) */}
+              {/* ============================================================= */}
+              <div className="card" style={{ borderLeft: '5px solid #10b981' }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: 12,
+                    paddingBottom: 14,
+                    marginBottom: 16,
+                    borderBottom: '1px solid #e2e8f0',
+                  }}
+                >
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <h2 style={{ fontSize: '1.15rem', fontWeight: 800, color: '#065f46' }}>
+                        🏦 1. Group ที่เก็บตังค์
+                      </h2>
+                      <span className="badge badge-emerald">
+                        {assetAccounts.length} บัญชี
+                      </span>
+                    </div>
+                    <p style={{ fontSize: '0.82rem', color: '#64748b', marginTop: 2 }}>
+                      เช่น BBL, KBank, Wallet, กระเป๋าเงินสด (สร้าง แก้ไข ลบ ได้ตามใจ)
+                    </p>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 600 }}>
+                        ยอดรวมที่เก็บตังค์ทั้งหมด
+                      </div>
+                      <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#059669' }}>
+                        {formatTHB(summary.totalAssets)}
+                      </div>
                     </div>
                     <button
                       type="button"
                       onClick={() => openCreateAccountModal('bank')}
-                      className="btn btn-outline btn-sm"
+                      className="btn btn-success btn-sm"
                     >
-                      ＋ เพิ่มบัญชี
+                      ＋ สร้างที่เก็บตังค์
                     </button>
                   </div>
+                </div>
 
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {assetAccounts.length === 0 ? (
+                  <div style={{ padding: 24, textAlign: 'center', color: '#64748b' }}>
+                    ยังไม่มีบัญชีใน Group ที่เก็บตังค์ กดปุ่ม <strong>&ldquo;＋ สร้างที่เก็บตังค์&rdquo;</strong> เพื่อสร้าง เช่น BBL, KBank, Wallet ได้เลย
+                  </div>
+                ) : (
+                  <div className="grid-2">
                     {assetAccounts.map((acc) => (
                       <div
                         key={acc.id}
@@ -1708,168 +1735,351 @@ export default function MoneyAppPage() {
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'space-between',
-                          padding: '12px 14px',
+                          padding: '14px 16px',
                           borderRadius: 14,
                           border: '1px solid #e2e8f0',
                           background: '#f8fafc',
+                          gap: 10,
                         }}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                           <div
                             style={{
-                              width: 40,
-                              height: 40,
+                              width: 44,
+                              height: 44,
                               borderRadius: 12,
                               background: acc.color || '#059669',
                               color: '#fff',
                               display: 'flex',
                               alignItems: 'center',
                               justifyContent: 'center',
-                              fontSize: '1.2rem',
+                              fontSize: '1.25rem',
+                              flexShrink: 0,
                             }}
                           >
                             {ACCOUNT_TYPE_META[acc.type]?.icon || '🏦'}
                           </div>
                           <div>
-                            <div style={{ fontWeight: 700, fontSize: '0.94rem', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                            <div style={{ fontWeight: 800, fontSize: '0.98rem', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                               {acc.name}
-                              {acc.isSharedWithFamily ? (
-                                <span className="badge badge-pink">🏠 แชร์กับบ้าน</span>
-                              ) : (
-                                <span className="badge badge-slate">🔒 ส่วนตัว</span>
+                              <span className="badge badge-slate">
+                                {ACCOUNT_TYPE_META[acc.type]?.badge}
+                              </span>
+                              {acc.isSharedWithFamily && (
+                                <span className="badge badge-pink">🏠 แชร์บ้าน</span>
                               )}
                             </div>
-                            <div style={{ fontSize: '0.76rem', color: '#64748b' }}>
-                              เจ้าของ: {acc.ownerName}
+                            <div style={{ fontSize: '1.15rem', fontWeight: 800, color: '#059669', marginTop: 2 }}>
+                              {formatTHB(acc.balance)}
                             </div>
                           </div>
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <div style={{ fontWeight: 800, fontSize: '1.02rem', color: '#059669' }}>
-                            {formatTHB(acc.balance)}
-                          </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                           <button
                             type="button"
                             onClick={() => openEditAccountModal(acc)}
                             className="btn btn-outline btn-sm"
-                            style={{ padding: '4px 8px' }}
-                            title="แก้ไขบัญชี"
+                            title="แก้ไขชื่อหรือยอดเงิน"
                           >
-                            ✏️
+                            ✏️ แก้ไข
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteAccount(acc)}
+                            className="btn btn-outline btn-sm"
+                            style={{ color: '#dc2626' }}
+                            title="ลบบัญชีนี้"
+                          >
+                            🗑️ ลบ
                           </button>
                         </div>
                       </div>
                     ))}
                   </div>
-                </div>
+                )}
+              </div>
 
-                {/* Credit Cards & BNPL */}
-                <div className="card">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-                    <div>
-                      <h2 style={{ fontSize: '1.05rem', fontWeight: 800 }}>💳 บัตรเครดิต & ใช้ก่อนจ่ายทีหลัง</h2>
-                      <p style={{ fontSize: '0.8rem', color: '#64748b' }}>เช็กยอดรูด วงเงินคงเหลือ แก้ไขข้อมูล และจ่ายบิล</p>
+              {/* ============================================================= */}
+              {/* GROUP 2: ใช้ก่อนจ่ายทีหลัง (เห็นยอดรวม + สร้าง/แก้ไข/ลบ ตามใจได้) */}
+              {/* ============================================================= */}
+              <div className="card" style={{ borderLeft: '5px solid #4f46e5' }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: 12,
+                    paddingBottom: 14,
+                    marginBottom: 16,
+                    borderBottom: '1px solid #e2e8f0',
+                  }}
+                >
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <h2 style={{ fontSize: '1.15rem', fontWeight: 800, color: '#312e81' }}>
+                        💳 2. Group ใช้ก่อนจ่าย (บัตรเครดิต & PayLater)
+                      </h2>
+                      <span className="badge badge-indigo">
+                        {creditAccounts.length} รายการ
+                      </span>
+                    </div>
+                    <p style={{ fontSize: '0.82rem', color: '#64748b', marginTop: 2 }}>
+                      เช่น บัตรเครดิต BBL, KBank, KTC, SPayLater (สร้าง แก้ไข ลบ และโอนจ่ายบิลได้ตามใจ)
+                    </p>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 600 }}>
+                        ยอดรวมใช้ก่อนจ่ายทั้งหมด (วงเงินเหลือ {formatTHB(Math.max(0, summary.totalCreditLimit - summary.totalCreditUsed))})
+                      </div>
+                      <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#dc2626' }}>
+                        -{formatTHB(summary.totalCreditUsed)}
+                      </div>
                     </div>
                     <button
                       type="button"
                       onClick={() => openCreateAccountModal('credit_card')}
-                      className="btn btn-outline btn-sm"
+                      className="btn btn-primary btn-sm"
                     >
-                      ＋ เพิ่มบัตร/PayLater
+                      ＋ สร้างบัตร / ใช้ก่อนจ่าย
                     </button>
                   </div>
+                </div>
 
-                  {creditAccounts.length === 0 ? (
-                    <div style={{ padding: 24, textAlign: 'center', color: '#64748b', fontSize: '0.88rem' }}>
-                      ยังไม่มีบัตรเครดิตหรือสินเชื่อใช้ก่อนจ่ายทีหลัง กดปุ่ม <strong>&ldquo;＋ เพิ่มบัตร/PayLater&rdquo;</strong> ด้านบนเพื่อเพิ่มได้เลย
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                      {creditAccounts.map((card) => {
-                        const available = Math.max(0, Number(card.creditLimit) - Number(card.usedAmount));
-                        const usagePct =
-                          card.creditLimit > 0
-                            ? Math.min(100, Math.round((card.usedAmount / card.creditLimit) * 100))
-                            : 0;
-                        return (
-                          <div
-                            key={card.id}
-                            style={{
-                              padding: 14,
-                              borderRadius: 14,
-                              border: '1px solid #e2e8f0',
-                              background: '#fff',
-                            }}
-                          >
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8, gap: 8 }}>
-                              <div>
-                                <div style={{ fontWeight: 700, fontSize: '0.95rem', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                                  <span>{ACCOUNT_TYPE_META[card.type]?.icon}</span>
-                                  {card.name}
-                                  {card.isSharedWithFamily && (
-                                    <span className="badge badge-pink">🏠 แชร์บ้าน</span>
-                                  )}
-                                </div>
-                                <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
-                                  สรุปยอดวันที่ {card.statementDay} • จ่ายวันที่ {card.dueDay} • {card.ownerName}
-                                </div>
+                {creditAccounts.length === 0 ? (
+                  <div style={{ padding: 24, textAlign: 'center', color: '#64748b' }}>
+                    ยังไม่มีรายการใน Group ใช้ก่อนจ่าย กดปุ่ม <strong>&ldquo;＋ สร้างบัตร / ใช้ก่อนจ่าย&rdquo;</strong> เพื่อเพิ่มบัตรเครดิต BBL, KBank หรือ PayLater ได้เลย
+                  </div>
+                ) : (
+                  <div className="grid-2">
+                    {creditAccounts.map((card) => {
+                      const available = Math.max(0, Number(card.creditLimit) - Number(card.usedAmount));
+                      const usagePct =
+                        card.creditLimit > 0
+                          ? Math.min(100, Math.round((card.usedAmount / card.creditLimit) * 100))
+                          : 0;
+                      return (
+                        <div
+                          key={card.id}
+                          style={{
+                            padding: 16,
+                            borderRadius: 14,
+                            border: '1px solid #e2e8f0',
+                            background: '#f8fafc',
+                          }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 10 }}>
+                            <div>
+                              <div style={{ fontWeight: 800, fontSize: '0.98rem', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                <span>{ACCOUNT_TYPE_META[card.type]?.icon}</span>
+                                {card.name}
+                                <span className="badge badge-indigo">
+                                  {ACCOUNT_TYPE_META[card.type]?.badge}
+                                </span>
+                                {card.isSharedWithFamily && (
+                                  <span className="badge badge-pink">🏠 แชร์บ้าน</span>
+                                )}
                               </div>
-                              <div style={{ display: 'flex', gap: 6 }}>
-                                <button
-                                  type="button"
-                                  onClick={() => openEditAccountModal(card)}
-                                  className="btn btn-outline btn-sm"
-                                  style={{ padding: '4px 8px' }}
-                                  title="แก้ไขบัตร"
-                                >
-                                  ✏️
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setShowPayCardModal(card);
-                                    setPayCardAmount(String(card.usedAmount));
-                                    setPayCardFromAccId(assetAccounts[0]?.id || '');
-                                  }}
-                                  className="btn btn-primary btn-sm"
-                                >
-                                  จ่ายบิลบัตร
-                                </button>
+                              <div style={{ fontSize: '1.15rem', fontWeight: 800, color: '#dc2626', marginTop: 2 }}>
+                                ยอดใช้ไป: {formatTHB(card.usedAmount)}
+                              </div>
+                              <div style={{ fontSize: '0.78rem', color: '#64748b' }}>
+                                วงเงินเหลือ: <strong style={{ color: '#059669' }}>{formatTHB(available)}</strong> (จาก {formatTHB(card.creditLimit)}) • สรุปวันที่ {card.statementDay} / จ่ายวันที่ {card.dueDay}
                               </div>
                             </div>
 
-                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: 6 }}>
-                              <span>
-                                รูดใช้ไป: <strong style={{ color: '#dc2626' }}>{formatTHB(card.usedAmount)}</strong>
-                              </span>
-                              <span>
-                                วงเงินคงเหลือ: <strong style={{ color: '#059669' }}>{formatTHB(available)}</strong>
-                              </span>
-                            </div>
-                            <div className="progress-track">
-                              <div
-                                className="progress-fill"
-                                style={{
-                                  width: `${usagePct}%`,
-                                  background: usagePct > 80 ? '#ef4444' : '#4f46e5',
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowPayCardModal(card);
+                                  setPayCardAmount(String(card.usedAmount));
+                                  setPayCardFromAccId(assetAccounts[0]?.id || '');
                                 }}
-                              />
+                                className="btn btn-primary btn-sm"
+                              >
+                                จ่ายบิล
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => openEditAccountModal(card)}
+                                className="btn btn-outline btn-sm"
+                              >
+                                ✏️ แก้ไข
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteAccount(card)}
+                                className="btn btn-outline btn-sm"
+                                style={{ color: '#dc2626' }}
+                              >
+                                🗑️ ลบ
+                              </button>
                             </div>
                           </div>
-                        );
-                      })}
+
+                          <div className="progress-track">
+                            <div
+                              className="progress-fill"
+                              style={{
+                                width: `${usagePct}%`,
+                                background: usagePct > 80 ? '#ef4444' : '#4f46e5',
+                              }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* ============================================================= */}
+              {/* GROUP 3: เจ้าหนี้ & ลูกหนี้ (เห็นยอดรวม + สร้าง/แก้ไข/ลบ ตามใจได้) */}
+              {/* ============================================================= */}
+              <div className="card" style={{ borderLeft: '5px solid #f59e0b' }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: 12,
+                    paddingBottom: 14,
+                    marginBottom: 16,
+                    borderBottom: '1px solid #e2e8f0',
+                  }}
+                >
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <h2 style={{ fontSize: '1.15rem', fontWeight: 800, color: '#92400e' }}>
+                        🤝 3. Group เจ้าหนี้ & ลูกหนี้
+                      </h2>
+                      <span className="badge badge-amber">
+                        {visibleLoans.length} รายชื่อ
+                      </span>
                     </div>
-                  )}
+                    <p style={{ fontSize: '0.82rem', color: '#64748b', marginTop: 2 }}>
+                      เช่น นายหนึ่ง, นางสอง (สร้าง แก้ไข ลบ และทยอยรับคืน/จ่ายคืนได้ตามใจ)
+                    </p>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 600 }}>
+                        ยอดรวมลูกหนี้ (รอรับคืน) / เจ้าหนี้ (ต้องจ่ายคืน)
+                      </div>
+                      <div style={{ fontSize: '1.15rem', fontWeight: 800 }}>
+                        <span style={{ color: '#059669' }}>ลูกหนี้ +{formatTHB(summary.totalReceivableLoans)}</span>
+                        {'  |  '}
+                        <span style={{ color: '#dc2626' }}>เจ้าหนี้ -{formatTHB(summary.totalPayableLoans)}</span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={openCreateLoanModal}
+                      className="btn btn-primary btn-sm"
+                    >
+                      ＋ สร้างเจ้าหนี้ / ลูกหนี้
+                    </button>
+                  </div>
                 </div>
+
+                {visibleLoans.length === 0 ? (
+                  <div style={{ padding: 24, textAlign: 'center', color: '#64748b' }}>
+                    ยังไม่มีรายชื่อใน Group เจ้าหนี้ / ลูกหนี้ กดปุ่ม <strong>&ldquo;＋ สร้างเจ้าหนี้ / ลูกหนี้&rdquo;</strong> เพื่อเพิ่ม เช่น นายหนึ่ง, นางสอง ได้เลย
+                  </div>
+                ) : (
+                  <div className="grid-2">
+                    {visibleLoans.map((loan) => {
+                      const remaining = Math.max(0, Number(loan.totalAmount) - Number(loan.paidAmount));
+                      const isLend = loan.loanType === 'lend';
+                      return (
+                        <div
+                          key={loan.id}
+                          style={{
+                            padding: 16,
+                            borderRadius: 14,
+                            border: isLend ? '1px solid #a7f3d0' : '1px solid #fde68a',
+                            background: isLend ? '#ecfdf5' : '#fffbeb',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            gap: 10,
+                            flexWrap: 'wrap',
+                          }}
+                        >
+                          <div>
+                            <div style={{ fontWeight: 800, fontSize: '0.98rem', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                              <span>👤 {loan.personName}</span>
+                              <span className={`badge ${isLend ? 'badge-emerald' : 'badge-amber'}`}>
+                                {isLend ? '🟢 ลูกหนี้ (เราให้ยืม)' : '🟠 เจ้าหนี้ (เรายืมมา)'}
+                              </span>
+                            </div>
+                            <div
+                              style={{
+                                fontSize: '1.15rem',
+                                fontWeight: 800,
+                                color: isLend ? '#059669' : '#dc2626',
+                                marginTop: 2,
+                              }}
+                            >
+                              {loan.status === 'settled'
+                                ? '✅ เคลียร์ครบแล้ว (0 บาท)'
+                                : `ยอดคงเหลือ: ${formatTHB(remaining)}`}
+                            </div>
+                            <div style={{ fontSize: '0.78rem', color: '#475569' }}>
+                              ยอดตั้งต้น {formatTHB(loan.totalAmount)} • จ่ายแล้ว {formatTHB(loan.paidAmount)} • {loan.note || '-'}
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            {loan.status === 'active' && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowRepayLoanModal(loan);
+                                  setRepayAmount(String(remaining));
+                                  setRepayAccountId(assetAccounts[0]?.id || loan.accountId);
+                                }}
+                                className="btn btn-success btn-sm"
+                              >
+                                {isLend ? 'รับเงินคืน' : 'จ่ายคืน'}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => openEditLoanModal(loan)}
+                              className="btn btn-outline btn-sm"
+                            >
+                              ✏️ แก้ไข
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteLoan(loan)}
+                              className="btn btn-outline btn-sm"
+                              style={{ color: '#dc2626' }}
+                            >
+                              🗑️ ลบ
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               {/* Recent Transactions List */}
               <div className="card">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
                   <div>
-                    <h2 style={{ fontSize: '1.05rem', fontWeight: 800 }}>📝 รายการเคลื่อนไหวล่าสุด</h2>
+                    <h2 style={{ fontSize: '1.05rem', fontWeight: 800 }}>📝 รายการรับ-จ่ายล่าสุด</h2>
                     <p style={{ fontSize: '0.8rem', color: '#64748b' }}>
-                      กดปุ่ม ✏️ ท้ายรายการเพื่อแก้ไขชื่อ ยอดเงิน หมวดหมู่ หรือลบรายการได้ตลอดเวลา
+                      กดปุ่ม ✏️ ท้ายรายการเพื่อแก้ไขหรือลบรายการได้ตลอดเวลา
                     </p>
                   </div>
                   <button
@@ -1877,13 +2087,13 @@ export default function MoneyAppPage() {
                     onClick={() => openNewTransactionModal('expense')}
                     className="btn btn-primary btn-sm"
                   >
-                    ＋ เพิ่มรายการ
+                    ＋ เพิ่มรายการรับ-จ่าย
                   </button>
                 </div>
 
                 {visibleTransactions.length === 0 ? (
                   <div style={{ textAlign: 'center', padding: 28, color: '#64748b' }}>
-                    ยังไม่มีรายการบันทึก กดปุ่ม &ldquo;＋ เพิ่มรายการ&rdquo; เพื่อเริ่มต้นจดรายรับ-รายจ่ายได้เลย
+                    ยังไม่มีรายการบันทึก กดปุ่ม &ldquo;＋ เพิ่มรายการรับ-จ่าย&rdquo; เพื่อเริ่มต้นได้เลย
                   </div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -2796,8 +3006,8 @@ export default function MoneyAppPage() {
           className={`mobile-nav-btn ${activeTab === 'dashboard' ? 'active' : ''}`}
           onClick={() => setActiveTab('dashboard')}
         >
-          <span style={{ fontSize: '1.2rem' }}>📊</span>
-          <span>ภาพรวม</span>
+          <span style={{ fontSize: '1.2rem' }}>🗂️</span>
+          <span>รวมบัญชี</span>
         </button>
         <button
           type="button"
