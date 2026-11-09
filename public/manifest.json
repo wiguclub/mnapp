@@ -1,0 +1,10 @@
+{
+  "name": "FlowWallet - รายรับรายจ่าย & บัตรเครดิตครอบครัว",
+  "short_name": "FlowWallet",
+  "description": "แอปรายรับรายจ่ายหลายบัญชี บัตรเครดิต ใช้ก่อนจ่ายทีหลัง ยืม-ให้ยืม และแชร์ยอดรวมกับคนในบ้าน",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#4f46e5",
+  "orientation": "portrait-primary"
+}
