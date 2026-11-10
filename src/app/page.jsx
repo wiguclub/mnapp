@@ -1530,11 +1530,11 @@ export default function MoneyAppPage() {
     const headers = [
       'วันที่',
       'ประเภท',
-      'ชื่อบัญชี/บัตร',
-      'โอนไปบัญชี',
+      'จากไหน (ต้นทาง)',
+      'ไปไหน (ปลายทาง)',
+      'เพราะอะไร (สาเหตุ/รายการ)',
       'หมวดหมู่',
-      'รายการ',
-      'จำนวนเงิน',
+      'เท่าไหร่ (บาท)',
       'ผู้บันทึก',
       'อีเมลผู้บันทึก',
       'สถานะแชร์',
@@ -1557,13 +1557,26 @@ export default function MoneyAppPage() {
         ? 'โอนเงินระหว่างบัญชี'
         : t.category || '-';
 
+      const accName = acc?.name || 'ไม่ระบุบัญชี';
+      const toAccName = toAcc?.name || '-';
+
+      let fromCol = accName;
+      let toCol = catLabel;
+      if (t.type === 'income') {
+        fromCol = catLabel;
+        toCol = accName;
+      } else if (t.type === 'transfer' || t.type === 'card_payment') {
+        fromCol = accName;
+        toCol = toAccName;
+      }
+
       return [
         csvCell(t.txDate),
         csvCell(typeLabelMap[t.type] || t.type),
-        csvCell(acc?.name || 'ไม่ระบุบัญชี'),
-        csvCell(toAcc?.name || '-'),
-        csvCell(catLabel),
+        csvCell(fromCol),
+        csvCell(toCol),
         csvCell(t.note || '-'),
+        csvCell(catLabel),
         csvCell(t.amount),
         csvCell(t.ownerName),
         csvCell(t.ownerEmail),
@@ -2045,7 +2058,14 @@ export default function MoneyAppPage() {
           </div>
         </header>
 
-        <main className="content-container">
+        <main
+          className="content-container"
+          style={
+            activeTab === 'transactions'
+              ? { maxWidth: '100%', padding: '20px 24px' }
+              : undefined
+          }
+        >
           {/* ================================================================= */}
           {/* GLOBAL BANNER: INCOMING GMAIL SHARE INVITATIONS (ต้องกดรับก่อน) */}
           {/* ================================================================= */}
@@ -2689,15 +2709,15 @@ export default function MoneyAppPage() {
                 )}
               </div>
 
-              {/* Recent Transactions List */}
-              <div className="card">
+              {/* Recent Transactions List (Table View) */}
+              <div className="card" style={{ overflow: 'hidden' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
                   <div>
                     <h2 style={{ fontSize: '1.05rem', fontWeight: 800 }}>
-                      📝 รายการรับ-จ่ายล่าสุด ({Math.min(visibleTransactions.length, 20)} จาก {visibleTransactions.length} รายการ)
+                      📝 ตารางรายการรับ-จ่าย-โอนล่าสุด ({Math.min(visibleTransactions.length, 20)} จาก {visibleTransactions.length} รายการ)
                     </h2>
                     <p style={{ fontSize: '0.8rem', color: '#64748b' }}>
-                      รายการของคุณกด ✏️ แก้ไขหรือลบได้ • รายการของคนในบ้านแสดงแบบดูอย่างเดียว
+                      ดูชัดเจนเป็นตารางว่าโอน/จ่ายจากไหน ไปไหน เท่าไหร่ วันไหน และเพราะอะไร • กด ✏️ แก้ไขหรือลบได้
                     </p>
                   </div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -2706,7 +2726,7 @@ export default function MoneyAppPage() {
                       onClick={() => setActiveTab('transactions')}
                       className="btn btn-outline btn-sm"
                     >
-                      🔍 ดูรายการทั้งหมด ({visibleTransactions.length})
+                      🔍 ดูตารางรายการทั้งหมด ({visibleTransactions.length})
                     </button>
                     <button
                       type="button"
@@ -2723,100 +2743,167 @@ export default function MoneyAppPage() {
                     ยังไม่มีรายการบันทึก กดปุ่ม &ldquo;＋ เพิ่มรายการรับ-จ่าย&rdquo; เพื่อเริ่มต้นได้เลย
                   </div>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {visibleTransactions.slice(0, 20).map((tx) => {
-                      const isOwner = tx.ownerEmail === currentUser.email;
-                      const allCats = [...EXPENSE_CATEGORIES, ...INCOME_CATEGORIES];
-                      const cat = allCats.find((c) => c.id === tx.category) || {
-                        icon: tx.type === 'card_payment' ? '💳' : '🔄',
-                        label: tx.type === 'card_payment' ? 'จ่ายบิลบัตรเครดิต' : 'โอนเงิน',
-                      };
-                      const acc = appState.accounts.find((a) => a.id === tx.accountId);
-                      return (
-                        <div
-                          key={tx.id}
+                  <div style={{ overflowX: 'auto' }}>
+                    <table
+                      style={{
+                        width: '100%',
+                        borderCollapse: 'collapse',
+                        fontSize: '0.88rem',
+                        minWidth: 760,
+                      }}
+                    >
+                      <thead>
+                        <tr
                           style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            padding: '12px 14px',
-                            borderRadius: 14,
-                            border: '1px solid #f1f5f9',
-                            background: isOwner ? '#f8fafc' : '#fdf2f8',
-                            gap: 10,
+                            background: '#f1f5f9',
+                            borderBottom: '2px solid #cbd5e1',
+                            textAlign: 'left',
+                            color: '#334155',
                           }}
                         >
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                            <div
+                          <th style={{ padding: '11px 12px', fontWeight: 800 }}>📅 วันที่</th>
+                          <th style={{ padding: '11px 12px', fontWeight: 800 }}>ประเภท</th>
+                          <th style={{ padding: '11px 12px', fontWeight: 800 }}>📤 จากไหน (ต้นทาง)</th>
+                          <th style={{ padding: '11px 12px', fontWeight: 800 }}>📥 ไปไหน (ปลายทาง)</th>
+                          <th style={{ padding: '11px 12px', fontWeight: 800 }}>💬 เพราะอะไร (รายละเอียด / หมวดหมู่)</th>
+                          <th style={{ padding: '11px 12px', fontWeight: 800, textAlign: 'right' }}>💰 เท่าไหร่ (บาท)</th>
+                          <th style={{ padding: '11px 12px', fontWeight: 800 }}>👤 ผู้จด</th>
+                          <th style={{ padding: '11px 12px', fontWeight: 800, textAlign: 'center' }}>จัดการ</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {visibleTransactions.slice(0, 20).map((tx, idx) => {
+                          const isOwner = tx.ownerEmail === currentUser.email;
+                          const allCats = [...EXPENSE_CATEGORIES, ...INCOME_CATEGORIES];
+                          const cat = allCats.find((c) => c.id === tx.category) || {
+                            icon: tx.type === 'card_payment' ? '💳' : '🔄',
+                            label: tx.type === 'card_payment' ? 'จ่ายบิลบัตรเครดิต' : 'โอนเงินระหว่างบัญชี',
+                          };
+                          const acc = appState.accounts.find((a) => a.id === tx.accountId);
+                          const toAcc = tx.toAccountId
+                            ? appState.accounts.find((a) => a.id === tx.toAccountId)
+                            : null;
+                          const accDisplay = acc
+                            ? `${ACCOUNT_TYPE_META[acc.type]?.icon || '🏦'} ${acc.name}`
+                            : 'ไม่ระบุบัญชี';
+                          const toAccDisplay = toAcc
+                            ? `${ACCOUNT_TYPE_META[toAcc.type]?.icon || '🏦'} ${toAcc.name}`
+                            : '-';
+
+                          let fromText = accDisplay;
+                          let toText = `${cat.icon} ${cat.label}`;
+                          let typeBadge = { label: '💸 รายจ่าย', cls: 'badge-red' };
+
+                          if (tx.type === 'income') {
+                            fromText = `${cat.icon} ${cat.label}`;
+                            toText = accDisplay;
+                            typeBadge = { label: '💰 รายรับ', cls: 'badge-emerald' };
+                          } else if (tx.type === 'transfer') {
+                            fromText = accDisplay;
+                            toText = toAccDisplay;
+                            typeBadge = { label: '🔄 โอนเงิน', cls: 'badge-indigo' };
+                          } else if (tx.type === 'card_payment') {
+                            fromText = accDisplay;
+                            toText = toAccDisplay;
+                            typeBadge = { label: '💳 จ่ายบิลบัตร', cls: 'badge-indigo' };
+                          }
+
+                          return (
+                            <tr
+                              key={tx.id}
                               style={{
-                                width: 42,
-                                height: 42,
-                                borderRadius: 12,
-                                background: '#ffffff',
-                                border: '1px solid #e2e8f0',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                fontSize: '1.25rem',
-                                flexShrink: 0,
+                                borderBottom: '1px solid #e2e8f0',
+                                background: !isOwner
+                                  ? '#fdf2f8'
+                                  : idx % 2 === 0
+                                  ? '#ffffff'
+                                  : '#f8fafc',
                               }}
                             >
-                              {cat.icon}
-                            </div>
-                            <div>
-                              <div style={{ fontWeight: 700, fontSize: '0.94rem', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                                {tx.note}
-                                {!isOwner && (
-                                  <span className="badge badge-pink">
-                                    👀 ของ {tx.ownerName}
+                              <td style={{ padding: '11px 12px', whiteSpace: 'nowrap', fontWeight: 600, color: '#334155' }}>
+                                {tx.txDate}
+                              </td>
+                              <td style={{ padding: '11px 12px', whiteSpace: 'nowrap' }}>
+                                <span className={`badge ${typeBadge.cls}`}>{typeBadge.label}</span>
+                              </td>
+                              <td style={{ padding: '11px 12px', fontWeight: 700, color: '#0f172a' }}>
+                                {fromText}
+                              </td>
+                              <td style={{ padding: '11px 12px', fontWeight: 700, color: '#4f46e5' }}>
+                                {toText}
+                              </td>
+                              <td style={{ padding: '11px 12px' }}>
+                                <div style={{ fontWeight: 700, color: '#0f172a' }}>{tx.note || '-'}</div>
+                                <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                                  หมวด: {cat.icon} {cat.label}
+                                </div>
+                              </td>
+                              <td
+                                style={{
+                                  padding: '11px 12px',
+                                  textAlign: 'right',
+                                  whiteSpace: 'nowrap',
+                                  fontWeight: 800,
+                                  fontSize: '0.96rem',
+                                  color:
+                                    tx.type === 'income'
+                                      ? '#059669'
+                                      : tx.type === 'card_payment' || tx.type === 'transfer'
+                                      ? '#4f46e5'
+                                      : '#dc2626',
+                                }}
+                              >
+                                {tx.type === 'income' ? '+' : tx.type === 'expense' ? '-' : ''}
+                                {formatTHB(tx.amount)}
+                              </td>
+                              <td style={{ padding: '11px 12px', whiteSpace: 'nowrap', fontSize: '0.82rem' }}>
+                                {isOwner ? (
+                                  <span style={{ color: '#475569', fontWeight: 600 }}>{tx.ownerName}</span>
+                                ) : (
+                                  <span className="badge badge-pink">👀 {tx.ownerName}</span>
+                                )}
+                              </td>
+                              <td style={{ padding: '11px 12px', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                                {isOwner ? (
+                                  <div style={{ display: 'inline-flex', gap: 6 }}>
+                                    <button
+                                      type="button"
+                                      onClick={() => openEditTransactionModal(tx)}
+                                      className="btn btn-outline btn-sm"
+                                      style={{ padding: '4px 8px' }}
+                                      title="แก้ไขรายการนี้"
+                                    >
+                                      ✏️ แก้ไข
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteTransaction(tx)}
+                                      className="btn btn-outline btn-sm"
+                                      style={{ padding: '4px 8px', color: '#dc2626' }}
+                                      title="ลบรายการนี้และคืนยอดเงิน"
+                                    >
+                                      🗑️ ลบ
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <span style={{ fontSize: '0.72rem', color: '#9d174d', fontWeight: 700 }}>
+                                    🔒 ดูอย่างเดียว
                                   </span>
                                 )}
-                              </div>
-                              <div style={{ fontSize: '0.76rem', color: '#64748b' }}>
-                                {cat.label} • {acc?.name || 'บัญชี'} • โดย {tx.ownerName} • {tx.txDate}
-                              </div>
-                            </div>
-                          </div>
-
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <div
-                              style={{
-                                fontWeight: 800,
-                                fontSize: '1rem',
-                                color:
-                                  tx.type === 'income'
-                                    ? '#059669'
-                                    : tx.type === 'card_payment' || tx.type === 'transfer'
-                                    ? '#4f46e5'
-                                    : '#dc2626',
-                              }}
-                            >
-                              {tx.type === 'income' ? '+' : tx.type === 'expense' ? '-' : ''}
-                              {formatTHB(tx.amount)}
-                            </div>
-                            {isOwner && (
-                              <button
-                                type="button"
-                                onClick={() => openEditTransactionModal(tx)}
-                                className="btn btn-outline btn-sm"
-                                style={{ padding: '4px 8px' }}
-                                title="แก้ไขหรือลบรายการนี้"
-                              >
-                                ✏️
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                     {visibleTransactions.length > 20 && (
                       <button
                         type="button"
                         onClick={() => setActiveTab('transactions')}
                         className="btn btn-outline"
-                        style={{ width: '100%', marginTop: 4 }}
+                        style={{ width: '100%', marginTop: 12 }}
                       >
-                        📋 ดูรายการทั้งหมดครบทั้ง {visibleTransactions.length} รายการ →
+                        📋 ดูตารางรายการทั้งหมดครบทั้ง {visibleTransactions.length} รายการ →
                       </button>
                     )}
                   </div>
@@ -3006,108 +3093,183 @@ export default function MoneyAppPage() {
                 </div>
               </div>
 
-              {/* Complete Transactions List */}
-              <div className="card">
+              {/* Complete Transactions Table */}
+              <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
                 {filteredAllTransactions.length === 0 ? (
                   <div style={{ textAlign: 'center', padding: 36, color: '#64748b' }}>
                     ไม่พบรายการที่ตรงกับเงื่อนไข หรือยังไม่มีรายการบันทึก
                   </div>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {filteredAllTransactions.map((tx) => {
-                      const isOwner = tx.ownerEmail === currentUser.email;
-                      const allCats = [...EXPENSE_CATEGORIES, ...INCOME_CATEGORIES];
-                      const cat = allCats.find((c) => c.id === tx.category) || {
-                        icon: tx.type === 'card_payment' ? '💳' : '🔄',
-                        label: tx.type === 'card_payment' ? 'จ่ายบิลบัตรเครดิต' : 'โอนเงิน',
-                      };
-                      const acc = appState.accounts.find((a) => a.id === tx.accountId);
-                      const toAcc = tx.toAccountId
-                        ? appState.accounts.find((a) => a.id === tx.toAccountId)
-                        : null;
-                      return (
-                        <div
-                          key={tx.id}
+                  <div style={{ overflowX: 'auto' }}>
+                    <table
+                      style={{
+                        width: '100%',
+                        borderCollapse: 'collapse',
+                        fontSize: '0.9rem',
+                        minWidth: 820,
+                      }}
+                    >
+                      <thead>
+                        <tr
                           style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            padding: '12px 14px',
-                            borderRadius: 14,
-                            border: '1px solid #f1f5f9',
-                            background: isOwner ? '#f8fafc' : '#fdf2f8',
-                            gap: 10,
-                            flexWrap: 'wrap',
+                            background: '#0f172a',
+                            color: '#f8fafc',
+                            textAlign: 'left',
                           }}
                         >
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                            <div
+                          <th style={{ padding: '13px 14px', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                            📅 วันที่
+                          </th>
+                          <th style={{ padding: '13px 14px', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                            ประเภท
+                          </th>
+                          <th style={{ padding: '13px 14px', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                            📤 จากไหน (ต้นทาง)
+                          </th>
+                          <th style={{ padding: '13px 14px', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                            📥 ไปไหน (ปลายทาง)
+                          </th>
+                          <th style={{ padding: '13px 14px', fontWeight: 700 }}>
+                            💬 เพราะอะไร (สาเหตุ / หมวดหมู่)
+                          </th>
+                          <th style={{ padding: '13px 14px', fontWeight: 700, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                            💰 เท่าไหร่ (บาท)
+                          </th>
+                          <th style={{ padding: '13px 14px', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                            👤 ผู้จด
+                          </th>
+                          <th style={{ padding: '13px 14px', fontWeight: 700, textAlign: 'center', whiteSpace: 'nowrap' }}>
+                            จัดการ
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredAllTransactions.map((tx, idx) => {
+                          const isOwner = tx.ownerEmail === currentUser.email;
+                          const allCats = [...EXPENSE_CATEGORIES, ...INCOME_CATEGORIES];
+                          const cat = allCats.find((c) => c.id === tx.category) || {
+                            icon: tx.type === 'card_payment' ? '💳' : '🔄',
+                            label: tx.type === 'card_payment' ? 'จ่ายบิลบัตรเครดิต' : 'โอนเงินระหว่างบัญชี',
+                          };
+                          const acc = appState.accounts.find((a) => a.id === tx.accountId);
+                          const toAcc = tx.toAccountId
+                            ? appState.accounts.find((a) => a.id === tx.toAccountId)
+                            : null;
+                          const accDisplay = acc
+                            ? `${ACCOUNT_TYPE_META[acc.type]?.icon || '🏦'} ${acc.name}`
+                            : 'ไม่ระบุบัญชี';
+                          const toAccDisplay = toAcc
+                            ? `${ACCOUNT_TYPE_META[toAcc.type]?.icon || '🏦'} ${toAcc.name}`
+                            : '-';
+
+                          let fromText = accDisplay;
+                          let toText = `${cat.icon} ${cat.label}`;
+                          let typeBadge = { label: '💸 รายจ่าย', cls: 'badge-red' };
+
+                          if (tx.type === 'income') {
+                            fromText = `${cat.icon} ${cat.label}`;
+                            toText = accDisplay;
+                            typeBadge = { label: '💰 รายรับ', cls: 'badge-emerald' };
+                          } else if (tx.type === 'transfer') {
+                            fromText = accDisplay;
+                            toText = toAccDisplay;
+                            typeBadge = { label: '🔄 โอนเงิน', cls: 'badge-indigo' };
+                          } else if (tx.type === 'card_payment') {
+                            fromText = accDisplay;
+                            toText = toAccDisplay;
+                            typeBadge = { label: '💳 จ่ายบิลบัตร', cls: 'badge-indigo' };
+                          }
+
+                          return (
+                            <tr
+                              key={tx.id}
                               style={{
-                                width: 42,
-                                height: 42,
-                                borderRadius: 12,
-                                background: '#ffffff',
-                                border: '1px solid #e2e8f0',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                fontSize: '1.25rem',
-                                flexShrink: 0,
+                                borderBottom: '1px solid #e2e8f0',
+                                background: !isOwner
+                                  ? '#fdf2f8'
+                                  : idx % 2 === 0
+                                  ? '#ffffff'
+                                  : '#f8fafc',
                               }}
                             >
-                              {cat.icon}
-                            </div>
-                            <div>
-                              <div style={{ fontWeight: 700, fontSize: '0.94rem', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                                {tx.note}
-                                {!isOwner && (
-                                  <span className="badge badge-pink">
-                                    👀 ของ {tx.ownerName}
+                              <td style={{ padding: '12px 14px', whiteSpace: 'nowrap', fontWeight: 700, color: '#334155' }}>
+                                {tx.txDate}
+                              </td>
+                              <td style={{ padding: '12px 14px', whiteSpace: 'nowrap' }}>
+                                <span className={`badge ${typeBadge.cls}`}>{typeBadge.label}</span>
+                              </td>
+                              <td style={{ padding: '12px 14px', fontWeight: 700, color: '#0f172a' }}>
+                                {fromText}
+                              </td>
+                              <td style={{ padding: '12px 14px', fontWeight: 700, color: '#4f46e5' }}>
+                                {toText}
+                              </td>
+                              <td style={{ padding: '12px 14px' }}>
+                                <div style={{ fontWeight: 700, color: '#0f172a' }}>
+                                  {tx.note || '-'}
+                                </div>
+                                <div style={{ fontSize: '0.76rem', color: '#64748b' }}>
+                                  หมวดหมู่: {cat.icon} {cat.label}
+                                </div>
+                              </td>
+                              <td
+                                style={{
+                                  padding: '12px 14px',
+                                  textAlign: 'right',
+                                  whiteSpace: 'nowrap',
+                                  fontWeight: 800,
+                                  fontSize: '1rem',
+                                  color:
+                                    tx.type === 'income'
+                                      ? '#059669'
+                                      : tx.type === 'card_payment' || tx.type === 'transfer'
+                                      ? '#4f46e5'
+                                      : '#dc2626',
+                                }}
+                              >
+                                {tx.type === 'income' ? '+' : tx.type === 'expense' ? '-' : ''}
+                                {formatTHB(tx.amount)}
+                              </td>
+                              <td style={{ padding: '12px 14px', whiteSpace: 'nowrap', fontSize: '0.84rem' }}>
+                                {isOwner ? (
+                                  <span style={{ color: '#334155', fontWeight: 600 }}>{tx.ownerName}</span>
+                                ) : (
+                                  <span className="badge badge-pink">👀 {tx.ownerName}</span>
+                                )}
+                              </td>
+                              <td style={{ padding: '12px 14px', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                                {isOwner ? (
+                                  <div style={{ display: 'inline-flex', gap: 6 }}>
+                                    <button
+                                      type="button"
+                                      onClick={() => openEditTransactionModal(tx)}
+                                      className="btn btn-outline btn-sm"
+                                      style={{ padding: '4px 10px' }}
+                                      title="แก้ไขรายการนี้"
+                                    >
+                                      ✏️ แก้ไข
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteTransaction(tx)}
+                                      className="btn btn-outline btn-sm"
+                                      style={{ padding: '4px 10px', color: '#dc2626' }}
+                                      title="ลบรายการนี้และคืนยอดเงิน"
+                                    >
+                                      🗑️ ลบ
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <span style={{ fontSize: '0.72rem', color: '#9d174d', fontWeight: 700 }}>
+                                    🔒 ดูอย่างเดียว
                                   </span>
                                 )}
-                              </div>
-                              <div style={{ fontSize: '0.76rem', color: '#64748b' }}>
-                                {cat.label} • {acc?.name || 'บัญชี'}
-                                {toAcc ? ` → ${toAcc.name}` : ''} • โดย {tx.ownerName} • วันที่ {tx.txDate}
-                              </div>
-                            </div>
-                          </div>
-
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <div
-                              style={{
-                                fontWeight: 800,
-                                fontSize: '1rem',
-                                color:
-                                  tx.type === 'income'
-                                    ? '#059669'
-                                    : tx.type === 'card_payment' || tx.type === 'transfer'
-                                    ? '#4f46e5'
-                                    : '#dc2626',
-                              }}
-                            >
-                              {tx.type === 'income' ? '+' : tx.type === 'expense' ? '-' : ''}
-                              {formatTHB(tx.amount)}
-                            </div>
-                            {isOwner ? (
-                              <button
-                                type="button"
-                                onClick={() => openEditTransactionModal(tx)}
-                                className="btn btn-outline btn-sm"
-                                style={{ padding: '4px 8px' }}
-                                title="แก้ไขหรือลบรายการนี้"
-                              >
-                                ✏️
-                              </button>
-                            ) : (
-                              <span style={{ fontSize: '0.72rem', color: '#9d174d', fontWeight: 700 }}>
-                                🔒 ดูอย่างเดียว
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
                 )}
               </div>
