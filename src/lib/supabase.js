@@ -1,6 +1,6 @@
 const STORAGE_KEY = 'flowwallet_multiuser_v3';
 const SESSION_USER_KEY = 'flowwallet_active_session_v3';
-const CLOUD_SYNC_URL = 'https://api.restful-api.dev/objects/ff808181a09d98f701a1c36e3c4d77d0';
+export const CLOUD_SYNC_TOPIC = 'fw_mnapp_cloud_v5_store';
 
 export const EXPENSE_CATEGORIES = [
   { id: 'food', label: 'อาหาร & เครื่องดื่ม', icon: '🍜', color: '#ef4444' },
@@ -33,7 +33,7 @@ export function createEmptyAppState() {
   return {
     users: [],
     familyGroups: [],
-    shareConnections: [], // { id, fromEmail, fromName, toEmail, status: 'pending' | 'accepted' | 'paused', shareBack: true, updatedAt }
+    shareConnections: [],
     accounts: [],
     installments: [],
     transactions: [],
@@ -57,6 +57,46 @@ export function normalizeState(raw) {
   };
 }
 
+function deduplicateStarterCashAccounts(accounts) {
+  const byOwner = new Map();
+  for (const acc of accounts) {
+    const owner = (acc.ownerEmail || '').toLowerCase();
+    if (!byOwner.has(owner)) byOwner.set(owner, []);
+    byOwner.get(owner).push(acc);
+  }
+
+  const result = [];
+  for (const [, userAccs] of byOwner.entries()) {
+    if (userAccs.length <= 1) {
+      result.push(...userAccs);
+      continue;
+    }
+    const emptyStarterCash = userAccs.filter(
+      (a) => a.type === 'cash' && a.name === 'กระเป๋าเงินสด' && Number(a.balance || 0) === 0
+    );
+    const nonEmptyOrCustom = userAccs.filter(
+      (a) => !(a.type === 'cash' && a.name === 'กระเป๋าเงินสด' && Number(a.balance || 0) === 0)
+    );
+    if (nonEmptyOrCustom.length > 0) {
+      // Keep all real/custom accounts; if none of them is 'กระเป๋าเงินสด', keep at most 1 starter cash account
+      const hasEditedCash = nonEmptyOrCustom.some(
+        (a) => a.type === 'cash' && a.name === 'กระเป๋าเงินสด'
+      );
+      if (hasEditedCash) {
+        result.push(...nonEmptyOrCustom);
+      } else if (emptyStarterCash.length > 0) {
+        result.push(emptyStarterCash[0], ...nonEmptyOrCustom);
+      } else {
+        result.push(...nonEmptyOrCustom);
+      }
+    } else {
+      // All accounts are empty starter cash accounts -> keep only 1
+      result.push(emptyStarterCash[0]);
+    }
+  }
+  return result;
+}
+
 // Merge local state and cloud state by item ID and updatedAt timestamp
 export function mergeStates(localRaw, cloudRaw) {
   const local = normalizeState(localRaw);
@@ -68,7 +108,8 @@ export function mergeStates(localRaw, cloudRaw) {
     const map = new Map();
     for (const item of [...arrA, ...arrB]) {
       if (!item || !item[keyField]) continue;
-      const k = item[keyField];
+      const k =
+        keyField === 'email' ? String(item[keyField]).toLowerCase() : String(item[keyField]);
       if (deletedSet.has(k)) continue;
       const existing = map.get(k);
       if (!existing) {
@@ -84,11 +125,15 @@ export function mergeStates(localRaw, cloudRaw) {
     return Array.from(map.values());
   };
 
+  const mergedAccounts = deduplicateStarterCashAccounts(
+    mergeById(local.accounts, cloud.accounts, 'id')
+  );
+
   return {
     users: mergeById(local.users, cloud.users, 'email'),
     familyGroups: mergeById(local.familyGroups, cloud.familyGroups, 'id'),
     shareConnections: mergeById(local.shareConnections, cloud.shareConnections, 'id'),
-    accounts: mergeById(local.accounts, cloud.accounts, 'id'),
+    accounts: mergedAccounts,
     installments: mergeById(local.installments, cloud.installments, 'id'),
     transactions: mergeById(local.transactions, cloud.transactions, 'id'),
     loans: mergeById(local.loans, cloud.loans, 'id'),
@@ -117,19 +162,115 @@ export function saveAppState(state) {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
 }
 
+function toAsciiJson(obj) {
+  return JSON.stringify(obj).replace(/[\u007F-\uFFFF]/g, (chr) =>
+    '\\u' + ('0000' + chr.charCodeAt(0).toString(16)).slice(-4)
+  );
+}
+
+async function fetchCloudStateFromNtfy() {
+  const res = await fetch(
+    `https://ntfy.sh/${CLOUD_SYNC_TOPIC}/json?poll=1&since=all&_t=${Date.now()}`,
+    {
+      method: 'GET',
+      cache: 'no-store',
+    }
+  );
+  if (!res.ok) return null;
+  const text = await res.text();
+  if (!text || !text.trim()) return createEmptyAppState();
+
+  const lines = text
+    .trim()
+    .split('\n')
+    .filter(Boolean);
+
+  const batches = {};
+  const batchOrder = [];
+
+  for (const lineStr of lines) {
+    try {
+      const event = JSON.parse(lineStr);
+      if (event.event !== 'message' || !event.message) continue;
+      const packet = JSON.parse(event.message);
+      if (packet && packet.b && typeof packet.i === 'number' && packet.n) {
+        if (!batches[packet.b]) {
+          batches[packet.b] = { n: packet.n, parts: {} };
+          batchOrder.push(packet.b);
+        }
+        batches[packet.b].parts[packet.i] = packet.d;
+      } else if (packet && Array.isArray(packet.accounts)) {
+        // Unchunked legacy packet
+        const bId = `legacy-${event.id}`;
+        batches[bId] = { n: 1, parts: { 0: JSON.stringify(packet) } };
+        batchOrder.push(bId);
+      }
+    } catch {
+      // Ignore malformed message lines
+    }
+  }
+
+  let accumulated = createEmptyAppState();
+  for (const bId of batchOrder) {
+    const b = batches[bId];
+    if (Object.keys(b.parts).length === b.n) {
+      try {
+        const joined = Array.from({ length: b.n }, (_, idx) => b.parts[idx]).join('');
+        const parsed = JSON.parse(joined);
+        accumulated = mergeStates(accumulated, parsed);
+      } catch {
+        // Ignore broken batch
+      }
+    }
+  }
+  return accumulated;
+}
+
+async function publishStateToNtfy(state) {
+  const raw = toAsciiJson(normalizeState(state));
+  const chunkSize = 2800;
+  const total = Math.max(1, Math.ceil(raw.length / chunkSize));
+  const batchId = `b${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+  for (let i = 0; i < total; i++) {
+    const chunk = raw.slice(i * chunkSize, (i + 1) * chunkSize);
+    const msg = JSON.stringify({ b: batchId, i, n: total, d: chunk });
+    await fetch('https://ntfy.sh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        topic: CLOUD_SYNC_TOPIC,
+        message: msg,
+      }),
+    });
+  }
+}
+
 // Fetch latest state from Cloud and merge with local
+// Also pushes local items to Cloud if local has any data not yet on Cloud!
 export async function syncWithCloud(currentState) {
   try {
-    const res = await fetch(CLOUD_SYNC_URL, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      cache: 'no-store',
-    });
-    if (!res.ok) return normalizeState(currentState);
-    const json = await res.json();
-    const cloudData = json?.data || createEmptyAppState();
-    const merged = mergeStates(currentState, cloudData);
+    const local = normalizeState(currentState);
+    const cloudData = await fetchCloudStateFromNtfy();
+    if (!cloudData) return local;
+
+    const normalizedCloud = normalizeState(cloudData);
+    const merged = mergeStates(local, normalizedCloud);
     saveAppState(merged);
+
+    // If local had any data (users, accounts, balances, transactions, loans, connections) not yet in cloudData, push merged to cloud automatically
+    const hasLocalContribution =
+      (local.users.length > 0 ||
+        local.accounts.length > 0 ||
+        local.transactions.length > 0 ||
+        local.loans.length > 0 ||
+        local.shareConnections.length > 0) &&
+      toAsciiJson(merged) !== toAsciiJson(normalizedCloud);
+
+    if (hasLocalContribution) {
+      await publishStateToNtfy(merged);
+    }
+
     return merged;
   } catch {
     return normalizeState(currentState);
@@ -139,26 +280,12 @@ export async function syncWithCloud(currentState) {
 // Push updated state to Cloud (merges with latest cloud state first to prevent overwriting)
 export async function pushStateToCloud(newState) {
   try {
-    saveAppState(newState);
-    const res = await fetch(CLOUD_SYNC_URL, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      cache: 'no-store',
-    });
-    let merged = normalizeState(newState);
-    if (res.ok) {
-      const json = await res.json();
-      merged = mergeStates(json?.data, newState);
-    }
+    const local = normalizeState(newState);
+    saveAppState(local);
+    const cloudData = await fetchCloudStateFromNtfy();
+    const merged = cloudData ? mergeStates(cloudData, local) : local;
     saveAppState(merged);
-    await fetch(CLOUD_SYNC_URL, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: 'flowwallet-store',
-        data: merged,
-      }),
-    });
+    await publishStateToNtfy(merged);
     return merged;
   } catch {
     return normalizeState(newState);

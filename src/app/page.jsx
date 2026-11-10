@@ -5,6 +5,7 @@ import {
   EXPENSE_CATEGORIES,
   INCOME_CATEGORIES,
   ACCOUNT_TYPE_META,
+  CLOUD_SYNC_TOPIC,
   loadAppState,
   saveAppState,
   syncWithCloud,
@@ -230,15 +231,48 @@ export default function MoneyAppPage() {
     setHydrated(true);
   }, []);
 
-  // Periodic background cloud sync so family invitations & shared updates appear automatically across devices
+  // Real-time SSE stream + window focus sync so Mobile & PC stay in sync instantly without rate-limit polling
   useEffect(() => {
-    if (!hydrated) return;
-    const timer = setInterval(async () => {
-      const currentLocal = loadAppState();
-      const merged = await syncWithCloud(currentLocal);
-      setAppState(merged);
-    }, 6500);
-    return () => clearInterval(timer);
+    if (!hydrated || typeof window === 'undefined') return;
+
+    let debounceTimer = null;
+    const triggerSync = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(async () => {
+        const currentLocal = loadAppState();
+        const merged = await syncWithCloud(currentLocal);
+        setAppState(merged);
+      }, 400);
+    };
+
+    let es = null;
+    if (typeof window.EventSource !== 'undefined') {
+      try {
+        es = new window.EventSource(`https://ntfy.sh/${CLOUD_SYNC_TOPIC}/sse`);
+        es.onmessage = () => {
+          triggerSync();
+        };
+      } catch {
+        // Ignore SSE errors
+      }
+    }
+
+    const onFocus = () => triggerSync();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') triggerSync();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+
+    const fallbackInterval = setInterval(triggerSync, 25000);
+
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      if (es) es.close();
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+      clearInterval(fallbackInterval);
+    };
   }, [hydrated]);
 
   // Load Google Identity Services
@@ -1404,10 +1438,11 @@ export default function MoneyAppPage() {
   };
 
   const handleManualCloudRefresh = async () => {
+    showToast('⏳ กำลังซิงค์ข้อมูลระหว่าง มือถือ ↔ คอม...');
     const currentLocal = loadAppState();
-    const merged = await syncWithCloud(currentLocal);
+    const merged = await pushStateToCloud(currentLocal);
     setAppState(merged);
-    showToast('🔄 ซิงค์ข้อมูลล่าสุดกับคนในบ้านเรียบร้อยแล้ว');
+    showToast('🔄 ซิงค์ข้อมูลล่าสุดระหว่าง มือถือ ↔ คอม เรียบร้อยแล้ว!');
   };
 
   const handleExportCSV = () => {
@@ -1844,6 +1879,15 @@ export default function MoneyAppPage() {
                   {pendingIncomingInvites.length}
                 </span>
               )}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleManualCloudRefresh}
+              className="btn btn-outline btn-sm"
+              title="ซิงค์ข้อมูลล่าสุดระหว่างมือถือและคอมพิวเตอร์"
+            >
+              🔄 ซิงค์ มือถือ↔คอม
             </button>
 
             <button
