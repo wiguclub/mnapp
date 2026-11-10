@@ -120,6 +120,13 @@ export default function MoneyAppPage() {
   const [joinCodeInput, setJoinCodeInput] = useState('');
   const [newFamilyName, setNewFamilyName] = useState('');
 
+  // All Transactions Page Filter State
+  const [txFilterType, setTxFilterType] = useState('all'); // 'all' | 'expense' | 'income' | 'card_payment' | 'transfer'
+  const [txFilterAccountId, setTxFilterAccountId] = useState('all');
+  const [txFilterCategory, setTxFilterCategory] = useState('all');
+  const [txSearchQuery, setTxSearchQuery] = useState('');
+  const [txFilterMonth, setTxFilterMonth] = useState('all');
+
   const showToast = (msg) => {
     setToastMessage(msg);
     setTimeout(() => {
@@ -445,6 +452,58 @@ export default function MoneyAppPage() {
     if (!appState || !currentUser) return [];
     return appState.transactions.filter(canSeeItem);
   }, [appState, currentUser, viewMode, familyMemberFilter, sharedByOthersEmails]);
+
+  const availableTxMonths = useMemo(() => {
+    const months = new Set();
+    visibleTransactions.forEach((tx) => {
+      if (tx.txDate && tx.txDate.length >= 7) {
+        months.add(tx.txDate.slice(0, 7));
+      }
+    });
+    return Array.from(months).sort().reverse();
+  }, [visibleTransactions]);
+
+  const filteredAllTransactions = useMemo(() => {
+    return visibleTransactions.filter((tx) => {
+      if (txFilterType !== 'all') {
+        if (txFilterType === 'transfer_or_card') {
+          if (tx.type !== 'transfer' && tx.type !== 'card_payment') return false;
+        } else if (tx.type !== txFilterType) {
+          return false;
+        }
+      }
+      if (txFilterAccountId !== 'all' && tx.accountId !== txFilterAccountId && tx.toAccountId !== txFilterAccountId) {
+        return false;
+      }
+      if (txFilterCategory !== 'all' && tx.category !== txFilterCategory) {
+        return false;
+      }
+      if (txFilterMonth !== 'all' && (!tx.txDate || !tx.txDate.startsWith(txFilterMonth))) {
+        return false;
+      }
+      if (txSearchQuery.trim()) {
+        const q = txSearchQuery.trim().toLowerCase();
+        const acc = appState?.accounts?.find((a) => a.id === tx.accountId);
+        const allCats = [...EXPENSE_CATEGORIES, ...INCOME_CATEGORIES];
+        const cat = allCats.find((c) => c.id === tx.category);
+        const matchNote = (tx.note || '').toLowerCase().includes(q);
+        const matchOwner = (tx.ownerName || '').toLowerCase().includes(q);
+        const matchAcc = (acc?.name || '').toLowerCase().includes(q);
+        const matchCat = (cat?.label || '').toLowerCase().includes(q);
+        const matchAmount = String(tx.amount || '').includes(q);
+        if (!matchNote && !matchOwner && !matchAcc && !matchCat && !matchAmount) return false;
+      }
+      return true;
+    });
+  }, [
+    visibleTransactions,
+    txFilterType,
+    txFilterAccountId,
+    txFilterCategory,
+    txFilterMonth,
+    txSearchQuery,
+    appState,
+  ]);
 
   const visibleLoans = useMemo(() => {
     if (!appState || !currentUser) return [];
@@ -1711,6 +1770,28 @@ export default function MoneyAppPage() {
           </button>
           <button
             type="button"
+            className={`sidebar-nav-btn ${activeTab === 'transactions' ? 'active' : ''}`}
+            onClick={() => setActiveTab('transactions')}
+            style={{ justifyContent: 'space-between' }}
+          >
+            <span style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span>📝</span> รายการทั้งหมด (Transactions)
+            </span>
+            <span
+              style={{
+                background: 'rgba(255,255,255,0.14)',
+                color: '#e2e8f0',
+                borderRadius: 999,
+                padding: '1px 8px',
+                fontSize: '0.72rem',
+                fontWeight: 700,
+              }}
+            >
+              {visibleTransactions.length}
+            </span>
+          </button>
+          <button
+            type="button"
             className={`sidebar-nav-btn ${activeTab === 'accounts' ? 'active' : ''}`}
             onClick={() => setActiveTab('accounts')}
           >
@@ -2554,20 +2635,31 @@ export default function MoneyAppPage() {
 
               {/* Recent Transactions List */}
               <div className="card">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
                   <div>
-                    <h2 style={{ fontSize: '1.05rem', fontWeight: 800 }}>📝 รายการรับ-จ่ายล่าสุด</h2>
+                    <h2 style={{ fontSize: '1.05rem', fontWeight: 800 }}>
+                      📝 รายการรับ-จ่ายล่าสุด ({Math.min(visibleTransactions.length, 20)} จาก {visibleTransactions.length} รายการ)
+                    </h2>
                     <p style={{ fontSize: '0.8rem', color: '#64748b' }}>
                       รายการของคุณกด ✏️ แก้ไขหรือลบได้ • รายการของคนในบ้านแสดงแบบดูอย่างเดียว
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => openNewTransactionModal('expense')}
-                    className="btn btn-primary btn-sm"
-                  >
-                    ＋ เพิ่มรายการรับ-จ่าย
-                  </button>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('transactions')}
+                      className="btn btn-outline btn-sm"
+                    >
+                      🔍 ดูรายการทั้งหมด ({visibleTransactions.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openNewTransactionModal('expense')}
+                      className="btn btn-primary btn-sm"
+                    >
+                      ＋ เพิ่มรายการรับ-จ่าย
+                    </button>
+                  </div>
                 </div>
 
                 {visibleTransactions.length === 0 ? (
@@ -2656,6 +2748,305 @@ export default function MoneyAppPage() {
                               >
                                 ✏️
                               </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {visibleTransactions.length > 20 && (
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('transactions')}
+                        className="btn btn-outline"
+                        style={{ width: '100%', marginTop: 4 }}
+                      >
+                        📋 ดูรายการทั้งหมดครบทั้ง {visibleTransactions.length} รายการ →
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ================================================================= */}
+          {/* TAB 1.5: ALL TRANSACTIONS (หน้าดูรายการทั้งหมด + ค้นหา + กรอง) */}
+          {/* ================================================================= */}
+          {activeTab === 'transactions' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+                <div>
+                  <h1 style={{ fontSize: '1.35rem', fontWeight: 800 }}>
+                    📝 รายการรับ-จ่าย-โอนทั้งหมด ({filteredAllTransactions.length} รายการ)
+                  </h1>
+                  <p style={{ fontSize: '0.86rem', color: '#64748b' }}>
+                    ดูประวัติธุรกรรมทั้งหมด ค้นหาตามชื่อ/ยอดเงิน กรองตามบัญชี หมวดหมู่ หรือเดือน และกด ✏️ แก้ไขรายการของคุณได้ทันที
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={handleExportCSV}
+                    className="btn btn-outline btn-sm"
+                  >
+                    📥 ส่งออก Excel (CSV)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openNewTransactionModal('expense')}
+                    className="btn btn-primary btn-sm"
+                  >
+                    ＋ เพิ่มรายการใหม่
+                  </button>
+                </div>
+              </div>
+
+              {/* Summary Strip for Filtered Transactions */}
+              <div className="grid-3">
+                <div className="card" style={{ padding: '16px 18px', borderLeft: '4px solid #10b981' }}>
+                  <div style={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 600 }}>
+                    รายรับรวม (จากรายการที่กรอง)
+                  </div>
+                  <div style={{ fontSize: '1.35rem', fontWeight: 800, color: '#059669', marginTop: 4 }}>
+                    +{formatTHB(
+                      filteredAllTransactions
+                        .filter((t) => t.type === 'income')
+                        .reduce((s, t) => s + Number(t.amount || 0), 0)
+                    )}
+                  </div>
+                </div>
+                <div className="card" style={{ padding: '16px 18px', borderLeft: '4px solid #ef4444' }}>
+                  <div style={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 600 }}>
+                    รายจ่ายรวม (จากรายการที่กรอง)
+                  </div>
+                  <div style={{ fontSize: '1.35rem', fontWeight: 800, color: '#dc2626', marginTop: 4 }}>
+                    -{formatTHB(
+                      filteredAllTransactions
+                        .filter((t) => t.type === 'expense')
+                        .reduce((s, t) => s + Number(t.amount || 0), 0)
+                    )}
+                  </div>
+                </div>
+                <div className="card" style={{ padding: '16px 18px', borderLeft: '4px solid #4f46e5' }}>
+                  <div style={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 600 }}>
+                    โอนเงิน / จ่ายบิลบัตร (จากรายการที่กรอง)
+                  </div>
+                  <div style={{ fontSize: '1.35rem', fontWeight: 800, color: '#4f46e5', marginTop: 4 }}>
+                    {formatTHB(
+                      filteredAllTransactions
+                        .filter((t) => t.type === 'transfer' || t.type === 'card_payment')
+                        .reduce((s, t) => s + Number(t.amount || 0), 0)
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Search & Filter Controls Card */}
+              <div className="card" style={{ padding: 18 }}>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+                  {[
+                    { id: 'all', label: `📋 ทั้งหมด (${visibleTransactions.length})` },
+                    { id: 'expense', label: '💸 รายจ่าย' },
+                    { id: 'income', label: '💰 รายรับ' },
+                    { id: 'transfer_or_card', label: '🔄 โอนเงิน / จ่ายบัตร' },
+                  ].map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setTxFilterType(tab.id)}
+                      className={`btn btn-sm ${
+                        txFilterType === tab.id ? 'btn-primary' : 'btn-outline'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                  {(txFilterType !== 'all' ||
+                    txFilterAccountId !== 'all' ||
+                    txFilterCategory !== 'all' ||
+                    txFilterMonth !== 'all' ||
+                    txSearchQuery.trim() !== '') && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTxFilterType('all');
+                        setTxFilterAccountId('all');
+                        setTxFilterCategory('all');
+                        setTxFilterMonth('all');
+                        setTxSearchQuery('');
+                      }}
+                      className="btn btn-ghost btn-sm"
+                      style={{ color: '#dc2626', fontWeight: 700 }}
+                    >
+                      ✕ ล้างตัวกรองทั้งหมด
+                    </button>
+                  )}
+                </div>
+
+                <div className="grid-4">
+                  <div>
+                    <label className="form-label" style={{ fontSize: '0.78rem' }}>
+                      🔍 ค้นหาชื่อรายการ / ยอดเงิน / คนจด
+                    </label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      placeholder="พิมพ์คำค้นหา เช่น กาแฟ, 500..."
+                      value={txSearchQuery}
+                      onChange={(e) => setTxSearchQuery(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="form-label" style={{ fontSize: '0.78rem' }}>
+                      🏦 กรองตามบัญชี / บัตร
+                    </label>
+                    <select
+                      className="form-select"
+                      value={txFilterAccountId}
+                      onChange={(e) => setTxFilterAccountId(e.target.value)}
+                    >
+                      <option value="all">ทุกบัญชีและบัตร ({visibleAccounts.length})</option>
+                      {visibleAccounts.map((acc) => (
+                        <option key={acc.id} value={acc.id}>
+                          {ACCOUNT_TYPE_META[acc.type]?.icon} {acc.name} ({acc.ownerName})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="form-label" style={{ fontSize: '0.78rem' }}>
+                      🏷️ กรองตามหมวดหมู่
+                    </label>
+                    <select
+                      className="form-select"
+                      value={txFilterCategory}
+                      onChange={(e) => setTxFilterCategory(e.target.value)}
+                    >
+                      <option value="all">ทุกหมวดหมู่</option>
+                      {[...EXPENSE_CATEGORIES, ...INCOME_CATEGORIES].map((cat) => (
+                        <option key={cat.id} value={cat.id}>
+                          {cat.icon} {cat.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="form-label" style={{ fontSize: '0.78rem' }}>
+                      📅 กรองตามเดือน (ปี-เดือน)
+                    </label>
+                    <select
+                      className="form-select"
+                      value={txFilterMonth}
+                      onChange={(e) => setTxFilterMonth(e.target.value)}
+                    >
+                      <option value="all">ทุกเดือน</option>
+                      {availableTxMonths.map((m) => (
+                        <option key={m} value={m}>
+                          เดือน {m}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Complete Transactions List */}
+              <div className="card">
+                {filteredAllTransactions.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: 36, color: '#64748b' }}>
+                    ไม่พบรายการที่ตรงกับเงื่อนไข หรือยังไม่มีรายการบันทึก
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {filteredAllTransactions.map((tx) => {
+                      const isOwner = tx.ownerEmail === currentUser.email;
+                      const allCats = [...EXPENSE_CATEGORIES, ...INCOME_CATEGORIES];
+                      const cat = allCats.find((c) => c.id === tx.category) || {
+                        icon: tx.type === 'card_payment' ? '💳' : '🔄',
+                        label: tx.type === 'card_payment' ? 'จ่ายบิลบัตรเครดิต' : 'โอนเงิน',
+                      };
+                      const acc = appState.accounts.find((a) => a.id === tx.accountId);
+                      const toAcc = tx.toAccountId
+                        ? appState.accounts.find((a) => a.id === tx.toAccountId)
+                        : null;
+                      return (
+                        <div
+                          key={tx.id}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '12px 14px',
+                            borderRadius: 14,
+                            border: '1px solid #f1f5f9',
+                            background: isOwner ? '#f8fafc' : '#fdf2f8',
+                            gap: 10,
+                            flexWrap: 'wrap',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                            <div
+                              style={{
+                                width: 42,
+                                height: 42,
+                                borderRadius: 12,
+                                background: '#ffffff',
+                                border: '1px solid #e2e8f0',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                fontSize: '1.25rem',
+                                flexShrink: 0,
+                              }}
+                            >
+                              {cat.icon}
+                            </div>
+                            <div>
+                              <div style={{ fontWeight: 700, fontSize: '0.94rem', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                {tx.note}
+                                {!isOwner && (
+                                  <span className="badge badge-pink">
+                                    👀 ของ {tx.ownerName}
+                                  </span>
+                                )}
+                              </div>
+                              <div style={{ fontSize: '0.76rem', color: '#64748b' }}>
+                                {cat.label} • {acc?.name || 'บัญชี'}
+                                {toAcc ? ` → ${toAcc.name}` : ''} • โดย {tx.ownerName} • วันที่ {tx.txDate}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <div
+                              style={{
+                                fontWeight: 800,
+                                fontSize: '1rem',
+                                color:
+                                  tx.type === 'income'
+                                    ? '#059669'
+                                    : tx.type === 'card_payment' || tx.type === 'transfer'
+                                    ? '#4f46e5'
+                                    : '#dc2626',
+                              }}
+                            >
+                              {tx.type === 'income' ? '+' : tx.type === 'expense' ? '-' : ''}
+                              {formatTHB(tx.amount)}
+                            </div>
+                            {isOwner ? (
+                              <button
+                                type="button"
+                                onClick={() => openEditTransactionModal(tx)}
+                                className="btn btn-outline btn-sm"
+                                style={{ padding: '4px 8px' }}
+                                title="แก้ไขหรือลบรายการนี้"
+                              >
+                                ✏️
+                              </button>
+                            ) : (
+                              <span style={{ fontSize: '0.72rem', color: '#9d174d', fontWeight: 700 }}>
+                                🔒 ดูอย่างเดียว
+                              </span>
                             )}
                           </div>
                         </div>
@@ -3628,16 +4019,24 @@ export default function MoneyAppPage() {
           className={`mobile-nav-btn ${activeTab === 'dashboard' ? 'active' : ''}`}
           onClick={() => setActiveTab('dashboard')}
         >
-          <span style={{ fontSize: '1.2rem' }}>🗂️</span>
+          <span style={{ fontSize: '1.15rem' }}>🗂️</span>
           <span>รวมบัญชี</span>
+        </button>
+        <button
+          type="button"
+          className={`mobile-nav-btn ${activeTab === 'transactions' ? 'active' : ''}`}
+          onClick={() => setActiveTab('transactions')}
+        >
+          <span style={{ fontSize: '1.15rem' }}>📝</span>
+          <span>รายการ</span>
         </button>
         <button
           type="button"
           className={`mobile-nav-btn ${activeTab === 'accounts' ? 'active' : ''}`}
           onClick={() => setActiveTab('accounts')}
         >
-          <span style={{ fontSize: '1.2rem' }}>💳</span>
-          <span>บัญชี/บัตร</span>
+          <span style={{ fontSize: '1.15rem' }}>💳</span>
+          <span>บัตร/ผ่อน</span>
         </button>
         <button
           type="button"
@@ -3652,15 +4051,15 @@ export default function MoneyAppPage() {
           className={`mobile-nav-btn ${activeTab === 'loans' ? 'active' : ''}`}
           onClick={() => setActiveTab('loans')}
         >
-          <span style={{ fontSize: '1.2rem' }}>🤝</span>
-          <span>ยืม/ให้ยืม</span>
+          <span style={{ fontSize: '1.15rem' }}>🤝</span>
+          <span>เจ้าหนี้</span>
         </button>
         <button
           type="button"
           className={`mobile-nav-btn ${activeTab === 'family' ? 'active' : ''}`}
           onClick={() => setActiveTab('family')}
         >
-          <span style={{ fontSize: '1.2rem' }}>🏠</span>
+          <span style={{ fontSize: '1.15rem' }}>🏠</span>
           <span>คนในบ้าน</span>
         </button>
       </nav>
