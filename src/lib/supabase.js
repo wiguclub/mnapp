@@ -1,5 +1,6 @@
-const STORAGE_KEY = 'flowwallet_multiuser_v2';
-const SESSION_USER_KEY = 'flowwallet_active_session_v2';
+const STORAGE_KEY = 'flowwallet_multiuser_v3';
+const SESSION_USER_KEY = 'flowwallet_active_session_v3';
+const CLOUD_SYNC_URL = 'https://api.restful-api.dev/objects/ff808181a09d98f701a1c36e3c4d77d0';
 
 export const EXPENSE_CATEGORIES = [
   { id: 'food', label: 'อาหาร & เครื่องดื่ม', icon: '🍜', color: '#ef4444' },
@@ -28,15 +29,70 @@ export const ACCOUNT_TYPE_META = {
   bnpl: { label: 'สินเชื่อ / PayLater (ใช้ก่อนจ่ายทีหลัง)', badge: 'PayLater', icon: '⚡', isLiability: true },
 };
 
-// Clean empty initial state (no fake/hardcoded users!)
 export function createEmptyAppState() {
   return {
     users: [],
     familyGroups: [],
+    shareConnections: [], // { id, fromEmail, fromName, toEmail, status: 'pending' | 'accepted' | 'paused', shareBack: true, updatedAt }
     accounts: [],
     installments: [],
     transactions: [],
     loans: [],
+    deletedIds: [],
+  };
+}
+
+export function normalizeState(raw) {
+  const base = createEmptyAppState();
+  if (!raw || typeof raw !== 'object') return base;
+  return {
+    users: Array.isArray(raw.users) ? raw.users : [],
+    familyGroups: Array.isArray(raw.familyGroups) ? raw.familyGroups : [],
+    shareConnections: Array.isArray(raw.shareConnections) ? raw.shareConnections : [],
+    accounts: Array.isArray(raw.accounts) ? raw.accounts : [],
+    installments: Array.isArray(raw.installments) ? raw.installments : [],
+    transactions: Array.isArray(raw.transactions) ? raw.transactions : [],
+    loans: Array.isArray(raw.loans) ? raw.loans : [],
+    deletedIds: Array.isArray(raw.deletedIds) ? raw.deletedIds : [],
+  };
+}
+
+// Merge local state and cloud state by item ID and updatedAt timestamp
+export function mergeStates(localRaw, cloudRaw) {
+  const local = normalizeState(localRaw);
+  const cloud = normalizeState(cloudRaw);
+
+  const deletedSet = new Set([...(local.deletedIds || []), ...(cloud.deletedIds || [])]);
+
+  const mergeById = (arrA, arrB, keyField = 'id') => {
+    const map = new Map();
+    for (const item of [...arrA, ...arrB]) {
+      if (!item || !item[keyField]) continue;
+      const k = item[keyField];
+      if (deletedSet.has(k)) continue;
+      const existing = map.get(k);
+      if (!existing) {
+        map.set(k, item);
+      } else {
+        const tNew = Number(item.updatedAt || 0);
+        const tOld = Number(existing.updatedAt || 0);
+        if (tNew >= tOld) {
+          map.set(k, item);
+        }
+      }
+    }
+    return Array.from(map.values());
+  };
+
+  return {
+    users: mergeById(local.users, cloud.users, 'email'),
+    familyGroups: mergeById(local.familyGroups, cloud.familyGroups, 'id'),
+    shareConnections: mergeById(local.shareConnections, cloud.shareConnections, 'id'),
+    accounts: mergeById(local.accounts, cloud.accounts, 'id'),
+    installments: mergeById(local.installments, cloud.installments, 'id'),
+    transactions: mergeById(local.transactions, cloud.transactions, 'id'),
+    loans: mergeById(local.loans, cloud.loans, 'id'),
+    deletedIds: Array.from(deletedSet).slice(-500),
   };
 }
 
@@ -49,7 +105,7 @@ export function loadAppState() {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(empty));
       return empty;
     }
-    return JSON.parse(raw);
+    return normalizeState(JSON.parse(raw));
   } catch {
     return createEmptyAppState();
   }
@@ -57,7 +113,56 @@ export function loadAppState() {
 
 export function saveAppState(state) {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  const normalized = normalizeState(state);
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+}
+
+// Fetch latest state from Cloud and merge with local
+export async function syncWithCloud(currentState) {
+  try {
+    const res = await fetch(CLOUD_SYNC_URL, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+    });
+    if (!res.ok) return normalizeState(currentState);
+    const json = await res.json();
+    const cloudData = json?.data || createEmptyAppState();
+    const merged = mergeStates(currentState, cloudData);
+    saveAppState(merged);
+    return merged;
+  } catch {
+    return normalizeState(currentState);
+  }
+}
+
+// Push updated state to Cloud (merges with latest cloud state first to prevent overwriting)
+export async function pushStateToCloud(newState) {
+  try {
+    saveAppState(newState);
+    const res = await fetch(CLOUD_SYNC_URL, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+    });
+    let merged = normalizeState(newState);
+    if (res.ok) {
+      const json = await res.json();
+      merged = mergeStates(json?.data, newState);
+    }
+    saveAppState(merged);
+    await fetch(CLOUD_SYNC_URL, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'flowwallet-store',
+        data: merged,
+      }),
+    });
+    return merged;
+  } catch {
+    return normalizeState(newState);
+  }
 }
 
 export function loadCurrentUser() {
@@ -80,7 +185,6 @@ export function saveCurrentUser(user) {
   }
 }
 
-// Decode JWT payload (for Google Identity Services ID Token or Supabase JWT)
 export function decodeJwtPayload(token) {
   try {
     const base64Url = token.split('.')[1];

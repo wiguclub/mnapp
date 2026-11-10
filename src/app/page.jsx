@@ -7,6 +7,8 @@ import {
   ACCOUNT_TYPE_META,
   loadAppState,
   saveAppState,
+  syncWithCloud,
+  pushStateToCloud,
   loadCurrentUser,
   saveCurrentUser,
   decodeJwtPayload,
@@ -32,6 +34,7 @@ export default function MoneyAppPage() {
   // Navigation & View Mode
   const [activeTab, setActiveTab] = useState('dashboard'); // dashboard | accounts | loans | reports | family
   const [viewMode, setViewMode] = useState('personal'); // personal | family
+  const [familyMemberFilter, setFamilyMemberFilter] = useState('all'); // 'all' | email
 
   // Google Sign-In State
   const [showGoogleEmailStep, setShowGoogleEmailStep] = useState(false);
@@ -71,7 +74,7 @@ export default function MoneyAppPage() {
   const [txDate, setTxDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [txIsInstallment, setTxIsInstallment] = useState(false);
   const [txInstallmentMonths, setTxInstallmentMonths] = useState('6');
-  const [txShared, setTxShared] = useState(false);
+  const [txShared, setTxShared] = useState(true);
 
   // Account / Card Form State
   const [accName, setAccName] = useState('');
@@ -82,7 +85,7 @@ export default function MoneyAppPage() {
   const [accStatementDay, setAccStatementDay] = useState('25');
   const [accDueDay, setAccDueDay] = useState('10');
   const [accColor, setAccColor] = useState('#4f46e5');
-  const [accShared, setAccShared] = useState(false);
+  const [accShared, setAccShared] = useState(true);
 
   // Pay Credit Card Modal State
   const [payCardFromAccId, setPayCardFromAccId] = useState('');
@@ -94,7 +97,7 @@ export default function MoneyAppPage() {
   const [instTotalAmount, setInstTotalAmount] = useState('');
   const [instMonths, setInstMonths] = useState('10');
   const [instPaidMonths, setInstPaidMonths] = useState('0');
-  const [instShared, setInstShared] = useState(false);
+  const [instShared, setInstShared] = useState(true);
 
   // Loan Form State
   const [loanType, setLoanType] = useState('lend');
@@ -104,7 +107,7 @@ export default function MoneyAppPage() {
   const [loanAccountId, setLoanAccountId] = useState('');
   const [loanDueDate, setLoanDueDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [loanNote, setLoanNote] = useState('');
-  const [loanShared, setLoanShared] = useState(false);
+  const [loanShared, setLoanShared] = useState(true);
 
   // Repay Loan Form State
   const [repayAmount, setRepayAmount] = useState('');
@@ -127,18 +130,22 @@ export default function MoneyAppPage() {
     setAppState((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
       saveAppState(next);
+      pushStateToCloud(next);
       return next;
     });
   };
 
-  const completeUserSession = (stateSnapshot, email, name, pictureUrl) => {
+  const completeUserSession = async (stateSnapshot, email, name, pictureUrl) => {
     const cleanEmail = (email || '').trim().toLowerCase();
     if (!cleanEmail) return;
 
-    const existingUser = stateSnapshot.users.find(
+    const syncedState = await syncWithCloud(stateSnapshot);
+
+    const existingUser = syncedState.users.find(
       (u) => u.email.toLowerCase() === cleanEmail
     );
     if (existingUser) {
+      setAppState(syncedState);
       setCurrentUser(existingUser);
       saveCurrentUser(existingUser);
       return;
@@ -146,7 +153,7 @@ export default function MoneyAppPage() {
 
     const fallbackName = cleanEmail.split('@')[0];
     const displayName = (name || fallbackName).trim();
-    const joinedFamily = stateSnapshot.familyGroups.find((fg) =>
+    const joinedFamily = syncedState.familyGroups.find((fg) =>
       fg.memberEmails.includes(cleanEmail)
     );
 
@@ -155,6 +162,7 @@ export default function MoneyAppPage() {
       name: displayName,
       avatar: pictureUrl || displayName.slice(0, 1).toUpperCase(),
       familyId: joinedFamily ? joinedFamily.id : null,
+      updatedAt: Date.now(),
     };
 
     const today = new Date().toISOString().slice(0, 10);
@@ -163,7 +171,7 @@ export default function MoneyAppPage() {
       ownerEmail: cleanEmail,
       ownerName: displayName,
       familyId: newUser.familyId,
-      isSharedWithFamily: false,
+      isSharedWithFamily: true,
       name: 'กระเป๋าเงินสด',
       type: 'cash',
       balance: 0,
@@ -173,17 +181,19 @@ export default function MoneyAppPage() {
       dueDay: 1,
       color: '#059669',
       createdAt: today,
+      updatedAt: Date.now(),
     };
 
     const nextState = {
-      ...stateSnapshot,
-      users: [...stateSnapshot.users, newUser],
-      accounts: [...stateSnapshot.accounts, starterCashAcc],
+      ...syncedState,
+      users: [...syncedState.users, newUser],
+      accounts: [...syncedState.accounts, starterCashAcc],
     };
     saveAppState(nextState);
     setAppState(nextState);
     setCurrentUser(newUser);
     saveCurrentUser(newUser);
+    pushStateToCloud(nextState);
   };
 
   useEffect(() => {
@@ -213,10 +223,23 @@ export default function MoneyAppPage() {
     const savedUser = loadCurrentUser();
     if (savedUser && savedUser.email) {
       completeUserSession(loadedState, savedUser.email, savedUser.name, savedUser.avatar);
+    } else {
+      syncWithCloud(loadedState).then((merged) => setAppState(merged));
     }
 
     setHydrated(true);
   }, []);
+
+  // Periodic background cloud sync so family invitations & shared updates appear automatically across devices
+  useEffect(() => {
+    if (!hydrated) return;
+    const timer = setInterval(async () => {
+      const currentLocal = loadAppState();
+      const merged = await syncWithCloud(currentLocal);
+      setAppState(merged);
+    }, 6500);
+    return () => clearInterval(timer);
+  }, [hydrated]);
 
   // Load Google Identity Services
   const googleClientId =
@@ -290,53 +313,109 @@ export default function MoneyAppPage() {
     );
   }, [appState, currentUser]);
 
+  // ============================================================================
+  // GMAIL CONSENT-BASED FAMILY SHARING (shareConnections)
+  // ============================================================================
+  const myConnections = useMemo(() => {
+    if (!appState || !currentUser) return [];
+    const list = Array.isArray(appState.shareConnections) ? appState.shareConnections : [];
+    const myEmail = currentUser.email.toLowerCase();
+    return list.filter(
+      (c) =>
+        (c.fromEmail?.toLowerCase() === myEmail || c.toEmail?.toLowerCase() === myEmail) &&
+        c.status !== 'declined'
+    );
+  }, [appState, currentUser]);
+
+  const pendingIncomingInvites = useMemo(() => {
+    if (!currentUser) return [];
+    const myEmail = currentUser.email.toLowerCase();
+    return myConnections.filter(
+      (c) => c.toEmail?.toLowerCase() === myEmail && c.status === 'pending'
+    );
+  }, [myConnections, currentUser]);
+
+  const pendingOutgoingInvites = useMemo(() => {
+    if (!currentUser) return [];
+    const myEmail = currentUser.email.toLowerCase();
+    return myConnections.filter(
+      (c) => c.fromEmail?.toLowerCase() === myEmail && c.status === 'pending'
+    );
+  }, [myConnections, currentUser]);
+
+  const acceptedConnections = useMemo(() => {
+    return myConnections.filter((c) => c.status === 'accepted');
+  }, [myConnections]);
+
+  // Emails of family members who have ACCEPTED our connection AND currently have their share switch ENABLED
+  const sharedByOthersEmails = useMemo(() => {
+    if (!currentUser) return [];
+    const myEmail = currentUser.email.toLowerCase();
+    const emails = new Set();
+    acceptedConnections.forEach((c) => {
+      const fromEm = c.fromEmail?.toLowerCase();
+      const toEm = c.toEmail?.toLowerCase();
+      if (fromEm === myEmail && c.toShareEnabled !== false) {
+        emails.add(toEm);
+      } else if (toEm === myEmail && c.fromShareEnabled !== false) {
+        emails.add(fromEm);
+      }
+    });
+    return Array.from(emails);
+  }, [acceptedConnections, currentUser]);
+
+  // Current user's own accounts (for form dropdowns so you never modify someone else's account)
+  const myAccounts = useMemo(() => {
+    if (!appState || !currentUser) return [];
+    return appState.accounts.filter((a) => a.ownerEmail === currentUser.email);
+  }, [appState, currentUser]);
+
+  const myAssetAccounts = useMemo(
+    () => myAccounts.filter((a) => !ACCOUNT_TYPE_META[a.type]?.isLiability),
+    [myAccounts]
+  );
+
+  const myCreditAccounts = useMemo(
+    () => myAccounts.filter((a) => ACCOUNT_TYPE_META[a.type]?.isLiability),
+    [myAccounts]
+  );
+
+  const canSeeItem = (item) => {
+    if (!currentUser || !item) return false;
+    const owner = (item.ownerEmail || '').toLowerCase();
+    const me = currentUser.email.toLowerCase();
+    if (viewMode === 'personal') {
+      return owner === me;
+    }
+    // In family view:
+    if (familyMemberFilter !== 'all') {
+      if (owner !== familyMemberFilter.toLowerCase()) return false;
+      if (owner === me) return true;
+      return sharedByOthersEmails.includes(owner) && item.isSharedWithFamily !== false;
+    }
+    if (owner === me) return true;
+    return sharedByOthersEmails.includes(owner) && item.isSharedWithFamily !== false;
+  };
+
   const visibleAccounts = useMemo(() => {
     if (!appState || !currentUser) return [];
-    if (viewMode === 'family' && currentFamily) {
-      return appState.accounts.filter(
-        (a) =>
-          currentFamily.memberEmails.includes(a.ownerEmail) &&
-          (a.isSharedWithFamily || a.ownerEmail === currentUser.email)
-      );
-    }
-    return appState.accounts.filter((a) => a.ownerEmail === currentUser.email);
-  }, [appState, currentUser, viewMode, currentFamily]);
+    return appState.accounts.filter(canSeeItem);
+  }, [appState, currentUser, viewMode, familyMemberFilter, sharedByOthersEmails]);
 
   const visibleInstallments = useMemo(() => {
     if (!appState || !currentUser) return [];
-    if (viewMode === 'family' && currentFamily) {
-      return appState.installments.filter(
-        (inst) =>
-          currentFamily.memberEmails.includes(inst.ownerEmail) &&
-          (inst.isSharedWithFamily || inst.ownerEmail === currentUser.email)
-      );
-    }
-    return appState.installments.filter((i) => i.ownerEmail === currentUser.email);
-  }, [appState, currentUser, viewMode, currentFamily]);
+    return appState.installments.filter(canSeeItem);
+  }, [appState, currentUser, viewMode, familyMemberFilter, sharedByOthersEmails]);
 
   const visibleTransactions = useMemo(() => {
     if (!appState || !currentUser) return [];
-    if (viewMode === 'family' && currentFamily) {
-      return appState.transactions.filter(
-        (t) =>
-          currentFamily.memberEmails.includes(t.ownerEmail) &&
-          (t.isSharedWithFamily || t.ownerEmail === currentUser.email)
-      );
-    }
-    return appState.transactions.filter((t) => t.ownerEmail === currentUser.email);
-  }, [appState, currentUser, viewMode, currentFamily]);
+    return appState.transactions.filter(canSeeItem);
+  }, [appState, currentUser, viewMode, familyMemberFilter, sharedByOthersEmails]);
 
   const visibleLoans = useMemo(() => {
     if (!appState || !currentUser) return [];
-    if (viewMode === 'family' && currentFamily) {
-      return appState.loans.filter(
-        (l) =>
-          currentFamily.memberEmails.includes(l.ownerEmail) &&
-          (l.isSharedWithFamily || l.ownerEmail === currentUser.email)
-      );
-    }
-    return appState.loans.filter((l) => l.ownerEmail === currentUser.email);
-  }, [appState, currentUser, viewMode, currentFamily]);
+    return appState.loans.filter(canSeeItem);
+  }, [appState, currentUser, viewMode, familyMemberFilter, sharedByOthersEmails]);
 
   const assetAccounts = useMemo(
     () => visibleAccounts.filter((a) => !ACCOUNT_TYPE_META[a.type]?.isLiability),
@@ -457,27 +536,37 @@ export default function MoneyAppPage() {
     e.preventDefault();
     const newName = profileNameInput.trim() || currentUser.name;
     const newHouseName = familyNameEditInput.trim();
+    const now = Date.now();
 
     updateState((prev) => ({
       ...prev,
       users: prev.users.map((u) =>
-        u.email === currentUser.email ? { ...u, name: newName } : u
+        u.email === currentUser.email ? { ...u, name: newName, updatedAt: now } : u
       ),
       accounts: prev.accounts.map((a) =>
-        a.ownerEmail === currentUser.email ? { ...a, ownerName: newName } : a
+        a.ownerEmail === currentUser.email ? { ...a, ownerName: newName, updatedAt: now } : a
       ),
       transactions: prev.transactions.map((t) =>
-        t.ownerEmail === currentUser.email ? { ...t, ownerName: newName } : t
+        t.ownerEmail === currentUser.email ? { ...t, ownerName: newName, updatedAt: now } : t
       ),
       installments: prev.installments.map((inst) =>
-        inst.ownerEmail === currentUser.email ? { ...inst, ownerName: newName } : inst
+        inst.ownerEmail === currentUser.email ? { ...inst, ownerName: newName, updatedAt: now } : inst
       ),
       loans: prev.loans.map((l) =>
-        l.ownerEmail === currentUser.email ? { ...l, ownerName: newName } : l
+        l.ownerEmail === currentUser.email ? { ...l, ownerName: newName, updatedAt: now } : l
       ),
+      shareConnections: (prev.shareConnections || []).map((c) => {
+        if (c.fromEmail?.toLowerCase() === currentUser.email.toLowerCase()) {
+          return { ...c, fromName: newName, updatedAt: now };
+        }
+        if (c.toEmail?.toLowerCase() === currentUser.email.toLowerCase()) {
+          return { ...c, toName: newName, updatedAt: now };
+        }
+        return c;
+      }),
       familyGroups: prev.familyGroups.map((fg) =>
         currentFamily && fg.id === currentFamily.id && newHouseName
-          ? { ...fg, name: newHouseName }
+          ? { ...fg, name: newHouseName, updatedAt: now }
           : fg
       ),
     }));
@@ -499,13 +588,12 @@ export default function MoneyAppPage() {
     setTxNote('');
     setTxIsInstallment(false);
     setTxCategory(defaultType === 'income' ? 'salary' : 'food');
-    const myAccs = appState.accounts.filter((a) => a.ownerEmail === currentUser.email);
-    const firstAcc = myAccs[0] || visibleAccounts[0];
+    const firstAcc = myAccounts[0];
     if (firstAcc) {
       setTxAccountId(firstAcc.id);
-      setTxShared(Boolean(firstAcc.isSharedWithFamily));
+      setTxShared(firstAcc.isSharedWithFamily !== false);
     }
-    const secondAcc = myAccs[1] || visibleAccounts[1];
+    const secondAcc = myAccounts[1];
     if (secondAcc) {
       setTxToAccountId(secondAcc.id);
     }
@@ -514,6 +602,10 @@ export default function MoneyAppPage() {
   };
 
   const openEditTransactionModal = (tx) => {
+    if (tx.ownerEmail !== currentUser.email) {
+      showToast('รายการของคนในบ้านเป็นโหมดดูอย่างเดียว ไม่สามารถแก้ไขได้');
+      return;
+    }
     setEditingTx(tx);
     setTxType(tx.type === 'card_payment' ? 'transfer' : tx.type);
     setTxAmount(String(tx.amount));
@@ -522,7 +614,7 @@ export default function MoneyAppPage() {
     setTxToAccountId(tx.toAccountId || '');
     setTxNote(tx.note || '');
     setTxDate(tx.txDate || new Date().toISOString().slice(0, 10));
-    setTxShared(Boolean(tx.isSharedWithFamily));
+    setTxShared(tx.isSharedWithFamily !== false);
     setTxIsInstallment(false);
     setShowTxModal(true);
   };
@@ -530,28 +622,29 @@ export default function MoneyAppPage() {
   // Helper to apply or reverse a transaction's balance effect on accounts
   const applyTxEffectToAccounts = (accountsList, tx, multiplier = 1) => {
     const amt = Number(tx.amount || 0) * multiplier;
+    const now = Date.now();
     return accountsList.map((acc) => {
       if (tx.type === 'income' && acc.id === tx.accountId) {
         if (ACCOUNT_TYPE_META[acc.type]?.isLiability) {
-          return { ...acc, usedAmount: Math.max(0, Number(acc.usedAmount) - amt) };
+          return { ...acc, usedAmount: Math.max(0, Number(acc.usedAmount) - amt), updatedAt: now };
         }
-        return { ...acc, balance: Number(acc.balance) + amt };
+        return { ...acc, balance: Number(acc.balance) + amt, updatedAt: now };
       }
       if (tx.type === 'expense' && acc.id === tx.accountId) {
         if (ACCOUNT_TYPE_META[acc.type]?.isLiability) {
-          return { ...acc, usedAmount: Math.max(0, Number(acc.usedAmount) + amt) };
+          return { ...acc, usedAmount: Math.max(0, Number(acc.usedAmount) + amt), updatedAt: now };
         }
-        return { ...acc, balance: Number(acc.balance) - amt };
+        return { ...acc, balance: Number(acc.balance) - amt, updatedAt: now };
       }
       if (tx.type === 'transfer' || tx.type === 'card_payment') {
         if (acc.id === tx.accountId) {
-          return { ...acc, balance: Number(acc.balance) - amt };
+          return { ...acc, balance: Number(acc.balance) - amt, updatedAt: now };
         }
         if (acc.id === tx.toAccountId) {
           if (ACCOUNT_TYPE_META[acc.type]?.isLiability) {
-            return { ...acc, usedAmount: Math.max(0, Number(acc.usedAmount) - amt) };
+            return { ...acc, usedAmount: Math.max(0, Number(acc.usedAmount) - amt), updatedAt: now };
           }
-          return { ...acc, balance: Number(acc.balance) + amt };
+          return { ...acc, balance: Number(acc.balance) + amt, updatedAt: now };
         }
       }
       return acc;
@@ -564,10 +657,11 @@ export default function MoneyAppPage() {
     if (!amount || amount <= 0 || !txAccountId) return;
 
     const selectedAcc = appState.accounts.find((a) => a.id === txAccountId);
-    if (!selectedAcc) return;
+    if (!selectedAcc || selectedAcc.ownerEmail !== currentUser.email) return;
 
     const isCreditOrBnpl = ACCOUNT_TYPE_META[selectedAcc.type]?.isLiability;
     const today = txDate || new Date().toISOString().slice(0, 10);
+    const now = Date.now();
 
     updateState((prev) => {
       let workingAccounts = prev.accounts;
@@ -583,7 +677,7 @@ export default function MoneyAppPage() {
           : txType;
 
       const updatedTxObj = {
-        id: editingTx ? editingTx.id : `tx-${Date.now()}`,
+        id: editingTx ? editingTx.id : `tx-${now}`,
         ownerEmail: editingTx ? editingTx.ownerEmail : currentUser.email,
         ownerName: editingTx ? editingTx.ownerName : currentUser.name,
         isSharedWithFamily: txShared,
@@ -601,6 +695,7 @@ export default function MoneyAppPage() {
         toAccountId: txType === 'transfer' ? txToAccountId : undefined,
         txDate: today,
         createdAt: editingTx ? editingTx.createdAt : today,
+        updatedAt: now,
       };
 
       workingAccounts = applyTxEffectToAccounts(workingAccounts, updatedTxObj, 1);
@@ -609,7 +704,7 @@ export default function MoneyAppPage() {
       if (!editingTx && txType === 'expense' && isCreditOrBnpl && txIsInstallment) {
         const months = Math.max(2, parseInt(txInstallmentMonths, 10) || 6);
         const newInst = {
-          id: `inst-${Date.now()}`,
+          id: `inst-${now}`,
           accountId: txAccountId,
           ownerEmail: currentUser.email,
           ownerName: currentUser.name,
@@ -622,6 +717,7 @@ export default function MoneyAppPage() {
           interestRate: 0,
           startDate: today,
           createdAt: today,
+          updatedAt: now,
         };
         updatedInstallments = [newInst, ...prev.installments];
       }
@@ -644,10 +740,12 @@ export default function MoneyAppPage() {
   };
 
   const handleDeleteTransaction = (txToDelete) => {
+    if (txToDelete.ownerEmail !== currentUser.email) return;
     updateState((prev) => ({
       ...prev,
       accounts: applyTxEffectToAccounts(prev.accounts, txToDelete, -1),
       transactions: prev.transactions.filter((t) => t.id !== txToDelete.id),
+      deletedIds: [...(prev.deletedIds || []), txToDelete.id],
     }));
     setShowTxModal(false);
     setEditingTx(null);
@@ -667,11 +765,15 @@ export default function MoneyAppPage() {
     setAccStatementDay('25');
     setAccDueDay('10');
     setAccColor(defaultType === 'credit_card' ? '#1e293b' : '#059669');
-    setAccShared(false);
+    setAccShared(true);
     setShowAccountModal(true);
   };
 
   const openEditAccountModal = (acc) => {
+    if (acc.ownerEmail !== currentUser.email) {
+      showToast('บัญชีของคนในบ้านเป็นโหมดดูอย่างเดียว ไม่สามารถแก้ไขได้');
+      return;
+    }
     setEditingAccount(acc);
     setAccType(acc.type);
     setAccName(acc.name);
@@ -681,7 +783,7 @@ export default function MoneyAppPage() {
     setAccStatementDay(String(acc.statementDay || 25));
     setAccDueDay(String(acc.dueDay || 10));
     setAccColor(acc.color || '#4f46e5');
-    setAccShared(Boolean(acc.isSharedWithFamily));
+    setAccShared(acc.isSharedWithFamily !== false);
     setShowAccountModal(true);
   };
 
@@ -690,8 +792,10 @@ export default function MoneyAppPage() {
     if (!accName.trim()) return;
     const isLiability = ACCOUNT_TYPE_META[accType]?.isLiability;
     const today = new Date().toISOString().slice(0, 10);
+    const now = Date.now();
 
     if (editingAccount) {
+      if (editingAccount.ownerEmail !== currentUser.email) return;
       updateState((prev) => ({
         ...prev,
         accounts: prev.accounts.map((a) =>
@@ -707,6 +811,7 @@ export default function MoneyAppPage() {
                 dueDay: parseInt(accDueDay, 10) || 10,
                 color: accColor,
                 isSharedWithFamily: accShared,
+                updatedAt: now,
               }
             : a
         ),
@@ -718,7 +823,7 @@ export default function MoneyAppPage() {
     }
 
     const newAcc = {
-      id: `acc-${Date.now()}`,
+      id: `acc-${now}`,
       ownerEmail: currentUser.email,
       ownerName: currentUser.name,
       familyId: currentFamily?.id || null,
@@ -732,6 +837,7 @@ export default function MoneyAppPage() {
       dueDay: parseInt(accDueDay, 10) || 10,
       color: accColor,
       createdAt: today,
+      updatedAt: now,
     };
 
     updateState((prev) => ({
@@ -746,12 +852,22 @@ export default function MoneyAppPage() {
   };
 
   const handleDeleteAccount = (accToDelete) => {
-    updateState((prev) => ({
-      ...prev,
-      accounts: prev.accounts.filter((a) => a.id !== accToDelete.id),
-      installments: prev.installments.filter((i) => i.accountId !== accToDelete.id),
-      transactions: prev.transactions.filter((t) => t.accountId !== accToDelete.id),
-    }));
+    if (accToDelete.ownerEmail !== currentUser.email) return;
+    updateState((prev) => {
+      const removedInstIds = prev.installments
+        .filter((i) => i.accountId === accToDelete.id)
+        .map((i) => i.id);
+      const removedTxIds = prev.transactions
+        .filter((t) => t.accountId === accToDelete.id)
+        .map((t) => t.id);
+      return {
+        ...prev,
+        accounts: prev.accounts.filter((a) => a.id !== accToDelete.id),
+        installments: prev.installments.filter((i) => i.accountId !== accToDelete.id),
+        transactions: prev.transactions.filter((t) => t.accountId !== accToDelete.id),
+        deletedIds: [...(prev.deletedIds || []), accToDelete.id, ...removedInstIds, ...removedTxIds],
+      };
+    });
     setShowAccountModal(false);
     setEditingAccount(null);
     showToast(`ลบบัญชี "${accToDelete.name}" เรียบร้อยแล้ว`);
@@ -761,32 +877,34 @@ export default function MoneyAppPage() {
   const handlePayCreditCardBill = (e) => {
     e.preventDefault();
     if (!showPayCardModal || !payCardFromAccId) return;
+    if (showPayCardModal.ownerEmail !== currentUser.email) return;
     const amount = parseFloat(payCardAmount);
     if (!amount || amount <= 0) return;
 
     const cardAcc = showPayCardModal;
     const bankAcc = appState.accounts.find((a) => a.id === payCardFromAccId);
-    if (!bankAcc) return;
+    if (!bankAcc || bankAcc.ownerEmail !== currentUser.email) return;
 
     const today = new Date().toISOString().slice(0, 10);
+    const now = Date.now();
 
     updateState((prev) => ({
       ...prev,
       accounts: prev.accounts.map((a) => {
         if (a.id === bankAcc.id) {
-          return { ...a, balance: Number(a.balance) - amount };
+          return { ...a, balance: Number(a.balance) - amount, updatedAt: now };
         }
         if (a.id === cardAcc.id) {
-          return { ...a, usedAmount: Math.max(0, Number(a.usedAmount) - amount) };
+          return { ...a, usedAmount: Math.max(0, Number(a.usedAmount) - amount), updatedAt: now };
         }
         return a;
       }),
       transactions: [
         {
-          id: `tx-${Date.now()}`,
+          id: `tx-${now}`,
           ownerEmail: currentUser.email,
           ownerName: currentUser.name,
-          isSharedWithFamily: Boolean(cardAcc.isSharedWithFamily),
+          isSharedWithFamily: cardAcc.isSharedWithFamily !== false,
           type: 'card_payment',
           amount,
           category: 'transfer',
@@ -795,6 +913,7 @@ export default function MoneyAppPage() {
           toAccountId: cardAcc.id,
           txDate: today,
           createdAt: today,
+          updatedAt: now,
         },
         ...prev.transactions,
       ],
@@ -810,22 +929,26 @@ export default function MoneyAppPage() {
   const openCreateInstallmentModal = () => {
     setEditingInstallment(null);
     setInstTitle('');
-    setInstAccountId(creditAccounts[0]?.id || '');
+    setInstAccountId(myCreditAccounts[0]?.id || '');
     setInstTotalAmount('');
     setInstMonths('10');
     setInstPaidMonths('0');
-    setInstShared(false);
+    setInstShared(true);
     setShowInstallmentModal(true);
   };
 
   const openEditInstallmentModal = (inst) => {
+    if (inst.ownerEmail !== currentUser.email) {
+      showToast('รายการของคนในบ้านเป็นโหมดดูอย่างเดียว ไม่สามารถแก้ไขได้');
+      return;
+    }
     setEditingInstallment(inst);
     setInstTitle(inst.title);
     setInstAccountId(inst.accountId);
     setInstTotalAmount(String(inst.totalAmount));
     setInstMonths(String(inst.totalMonths));
     setInstPaidMonths(String(inst.paidMonths || 0));
-    setInstShared(Boolean(inst.isSharedWithFamily));
+    setInstShared(inst.isSharedWithFamily !== false);
     setShowInstallmentModal(true);
   };
 
@@ -834,13 +957,15 @@ export default function MoneyAppPage() {
     const total = parseFloat(instTotalAmount);
     const months = Math.max(1, parseInt(instMonths, 10) || 10);
     const paid = Math.min(months, Math.max(0, parseInt(instPaidMonths, 10) || 0));
-    const targetAccId = instAccountId || creditAccounts[0]?.id;
+    const targetAccId = instAccountId || myCreditAccounts[0]?.id;
     if (!instTitle.trim() || !total || total <= 0 || !targetAccId) return;
 
     const today = new Date().toISOString().slice(0, 10);
     const monthly = Math.round((total / months) * 100) / 100;
+    const now = Date.now();
 
     if (editingInstallment) {
+      if (editingInstallment.ownerEmail !== currentUser.email) return;
       updateState((prev) => ({
         ...prev,
         installments: prev.installments.map((item) =>
@@ -854,6 +979,7 @@ export default function MoneyAppPage() {
                 paidMonths: paid,
                 monthlyAmount: monthly,
                 isSharedWithFamily: instShared,
+                updatedAt: now,
               }
             : item
         ),
@@ -867,11 +993,11 @@ export default function MoneyAppPage() {
     updateState((prev) => ({
       ...prev,
       accounts: prev.accounts.map((a) =>
-        a.id === targetAccId ? { ...a, usedAmount: Number(a.usedAmount) + total } : a
+        a.id === targetAccId ? { ...a, usedAmount: Number(a.usedAmount) + total, updatedAt: now } : a
       ),
       installments: [
         {
-          id: `inst-${Date.now()}`,
+          id: `inst-${now}`,
           accountId: targetAccId,
           ownerEmail: currentUser.email,
           ownerName: currentUser.name,
@@ -884,6 +1010,7 @@ export default function MoneyAppPage() {
           interestRate: 0,
           startDate: today,
           createdAt: today,
+          updatedAt: now,
         },
         ...prev.installments,
       ],
@@ -896,9 +1023,11 @@ export default function MoneyAppPage() {
   };
 
   const handleDeleteInstallment = (instToDelete) => {
+    if (instToDelete.ownerEmail !== currentUser.email) return;
     updateState((prev) => ({
       ...prev,
       installments: prev.installments.filter((i) => i.id !== instToDelete.id),
+      deletedIds: [...(prev.deletedIds || []), instToDelete.id],
     }));
     setShowInstallmentModal(false);
     setEditingInstallment(null);
@@ -906,11 +1035,13 @@ export default function MoneyAppPage() {
   };
 
   const handleAdvanceInstallmentMonth = (inst) => {
+    if (inst.ownerEmail !== currentUser.email) return;
     if (inst.paidMonths >= inst.totalMonths) return;
+    const now = Date.now();
     updateState((prev) => ({
       ...prev,
       installments: prev.installments.map((item) =>
-        item.id === inst.id ? { ...item, paidMonths: item.paidMonths + 1 } : item
+        item.id === inst.id ? { ...item, paidMonths: item.paidMonths + 1, updatedAt: now } : item
       ),
     }));
     showToast(`บันทึกจ่ายงวดที่ ${inst.paidMonths + 1}/${inst.totalMonths} ของ "${inst.title}" แล้ว`);
@@ -925,23 +1056,27 @@ export default function MoneyAppPage() {
     setLoanPerson('');
     setLoanAmount('');
     setLoanPaidAmount('0');
-    setLoanAccountId(assetAccounts[0]?.id || '');
+    setLoanAccountId(myAssetAccounts[0]?.id || '');
     setLoanDueDate(new Date().toISOString().slice(0, 10));
     setLoanNote('');
-    setLoanShared(false);
+    setLoanShared(true);
     setShowLoanModal(true);
   };
 
   const openEditLoanModal = (loan) => {
+    if (loan.ownerEmail !== currentUser.email) {
+      showToast('รายการของคนในบ้านเป็นโหมดดูอย่างเดียว ไม่สามารถแก้ไขได้');
+      return;
+    }
     setEditingLoan(loan);
     setLoanType(loan.loanType);
     setLoanPerson(loan.personName);
     setLoanAmount(String(loan.totalAmount));
     setLoanPaidAmount(String(loan.paidAmount || 0));
-    setLoanAccountId(loan.accountId || assetAccounts[0]?.id || '');
+    setLoanAccountId(loan.accountId || myAssetAccounts[0]?.id || '');
     setLoanDueDate(loan.dueDate || new Date().toISOString().slice(0, 10));
     setLoanNote(loan.note || '');
-    setLoanShared(Boolean(loan.isSharedWithFamily));
+    setLoanShared(loan.isSharedWithFamily !== false);
     setShowLoanModal(true);
   };
 
@@ -952,8 +1087,10 @@ export default function MoneyAppPage() {
     if (!loanPerson.trim() || !amount || amount <= 0) return;
 
     const today = new Date().toISOString().slice(0, 10);
+    const now = Date.now();
 
     if (editingLoan) {
+      if (editingLoan.ownerEmail !== currentUser.email) return;
       updateState((prev) => ({
         ...prev,
         loans: prev.loans.map((l) =>
@@ -969,6 +1106,7 @@ export default function MoneyAppPage() {
                 note: loanNote.trim(),
                 isSharedWithFamily: loanShared,
                 status: paid >= amount ? 'settled' : 'active',
+                updatedAt: now,
               }
             : l
         ),
@@ -980,7 +1118,7 @@ export default function MoneyAppPage() {
     }
 
     const newLoan = {
-      id: `loan-${Date.now()}`,
+      id: `loan-${now}`,
       ownerEmail: currentUser.email,
       ownerName: currentUser.name,
       isSharedWithFamily: loanShared,
@@ -994,18 +1132,20 @@ export default function MoneyAppPage() {
       status: paid >= amount ? 'settled' : 'active',
       repayments: [],
       createdAt: today,
+      updatedAt: now,
     };
 
     updateState((prev) => ({
       ...prev,
       accounts: prev.accounts.map((a) => {
-        if (a.id !== loanAccountId) return a;
+        if (a.id !== loanAccountId || a.ownerEmail !== currentUser.email) return a;
         return {
           ...a,
           balance:
             loanType === 'lend'
               ? Number(a.balance) - amount
               : Number(a.balance) + amount,
+          updatedAt: now,
         };
       }),
       loans: [newLoan, ...prev.loans],
@@ -1023,9 +1163,11 @@ export default function MoneyAppPage() {
   };
 
   const handleDeleteLoan = (loanToDelete) => {
+    if (loanToDelete.ownerEmail !== currentUser.email) return;
     updateState((prev) => ({
       ...prev,
       loans: prev.loans.filter((l) => l.id !== loanToDelete.id),
+      deletedIds: [...(prev.deletedIds || []), loanToDelete.id],
     }));
     setShowLoanModal(false);
     setEditingLoan(null);
@@ -1035,11 +1177,13 @@ export default function MoneyAppPage() {
   const handleRecordLoanRepayment = (e) => {
     e.preventDefault();
     if (!showRepayLoanModal || !repayAccountId) return;
+    if (showRepayLoanModal.ownerEmail !== currentUser.email) return;
     const amount = parseFloat(repayAmount);
     if (!amount || amount <= 0) return;
 
     const targetLoan = showRepayLoanModal;
     const today = new Date().toISOString().slice(0, 10);
+    const now = Date.now();
     const newPaidAmount = Math.min(
       targetLoan.totalAmount,
       Number(targetLoan.paidAmount) + amount
@@ -1049,13 +1193,14 @@ export default function MoneyAppPage() {
     updateState((prev) => ({
       ...prev,
       accounts: prev.accounts.map((a) => {
-        if (a.id !== repayAccountId) return a;
+        if (a.id !== repayAccountId || a.ownerEmail !== currentUser.email) return a;
         return {
           ...a,
           balance:
             targetLoan.loanType === 'lend'
               ? Number(a.balance) + amount
               : Number(a.balance) - amount,
+          updatedAt: now,
         };
       }),
       loans: prev.loans.map((l) => {
@@ -1064,10 +1209,11 @@ export default function MoneyAppPage() {
           ...l,
           paidAmount: newPaidAmount,
           status: isNowSettled ? 'settled' : 'active',
+          updatedAt: now,
           repayments: [
             ...l.repayments,
             {
-              id: `rep-${Date.now()}`,
+              id: `rep-${now}`,
               amount,
               accountId: repayAccountId,
               date: today,
@@ -1102,101 +1248,166 @@ export default function MoneyAppPage() {
   };
 
   const handleToggleAccountShare = (accountId) => {
+    const now = Date.now();
     updateState((prev) => ({
       ...prev,
       accounts: prev.accounts.map((a) =>
-        a.id === accountId ? { ...a, isSharedWithFamily: !a.isSharedWithFamily } : a
+        a.id === accountId && a.ownerEmail === currentUser.email
+          ? { ...a, isSharedWithFamily: !a.isSharedWithFamily, updatedAt: now }
+          : a
       ),
     }));
-    showToast('อัปเดตสถานะการแชร์บัญชีกับคนในบ้านแล้ว');
+    showToast('อัปเดตสถานะการแชร์บัญชีนี้แล้ว');
   };
 
-  const handleCreateFamilyGroup = (e) => {
+  // ============================================================================
+  // GMAIL FAMILY SHARING: INVITE, ACCEPT, PAUSE/RESUME, DISCONNECT
+  // ============================================================================
+  const handleSendShareInvite = (e) => {
     e.preventDefault();
-    const houseName = (newFamilyName || `บ้านของ ${currentUser.name}`).trim();
-    const randomCode = `HOME-${Math.floor(1000 + Math.random() * 9000)}`;
-    const newGroup = {
-      id: `fam-${Date.now()}`,
-      name: houseName,
-      inviteCode: randomCode,
-      ownerEmail: currentUser.email,
-      memberEmails: [currentUser.email],
-      createdAt: new Date().toISOString().slice(0, 10),
-    };
-
-    updateState((prev) => ({
-      ...prev,
-      familyGroups: [...prev.familyGroups, newGroup],
-      users: prev.users.map((u) =>
-        u.email === currentUser.email ? { ...u, familyId: newGroup.id } : u
-      ),
-    }));
-    setCurrentUser((prev) => {
-      const updated = { ...prev, familyId: newGroup.id };
-      saveCurrentUser(updated);
-      return updated;
-    });
-    setNewFamilyName('');
-    showToast(`สร้างบ้าน "${houseName}" รหัส ${randomCode} สำเร็จ!`);
-  };
-
-  const handleInviteFamilyEmail = (e) => {
-    e.preventDefault();
-    const email = inviteEmailInput.trim().toLowerCase();
-    if (!email || !email.includes('@') || !currentFamily) return;
-
-    updateState((prev) => ({
-      ...prev,
-      familyGroups: prev.familyGroups.map((fg) =>
-        fg.id === currentFamily.id && !fg.memberEmails.includes(email)
-          ? { ...fg, memberEmails: [...fg.memberEmails, email] }
-          : fg
-      ),
-    }));
-    setInviteEmailInput('');
-    showToast(`เพิ่ม ${email} เข้าสู่บ้าน "${currentFamily.name}" แล้ว`);
-  };
-
-  const handleRemoveFamilyMember = (emailToRemove) => {
-    if (!currentFamily) return;
-    updateState((prev) => ({
-      ...prev,
-      familyGroups: prev.familyGroups.map((fg) =>
-        fg.id === currentFamily.id
-          ? { ...fg, memberEmails: fg.memberEmails.filter((em) => em !== emailToRemove) }
-          : fg
-      ),
-    }));
-    showToast(`นำ ${emailToRemove} ออกจากบ้านแล้ว`);
-  };
-
-  const handleJoinFamilyByCode = (e) => {
-    e.preventDefault();
-    const code = joinCodeInput.trim().toUpperCase();
-    if (!code) return;
-    const found = appState.familyGroups.find((fg) => fg.inviteCode.toUpperCase() === code);
-    if (!found) {
-      showToast('ไม่พบรหัสบ้านนี้ กรุณาตรวจสอบรหัสอีกครั้ง');
+    let targetEmail = inviteEmailInput.trim().toLowerCase();
+    if (!targetEmail) return;
+    if (!targetEmail.includes('@')) {
+      targetEmail = `${targetEmail}@gmail.com`;
+    }
+    if (targetEmail === currentUser.email.toLowerCase()) {
+      showToast('ไม่สามารถส่งคำขอแชร์หา Gmail ของตัวเองได้');
       return;
     }
+
+    const now = Date.now();
+    const existingTargetUser = appState.users.find(
+      (u) => u.email.toLowerCase() === targetEmail
+    );
+    const targetName = existingTargetUser?.name || targetEmail.split('@')[0];
+
+    updateState((prev) => {
+      const list = Array.isArray(prev.shareConnections) ? prev.shareConnections : [];
+      const existingConn = list.find(
+        (c) =>
+          (c.fromEmail?.toLowerCase() === currentUser.email.toLowerCase() &&
+            c.toEmail?.toLowerCase() === targetEmail) ||
+          (c.fromEmail?.toLowerCase() === targetEmail &&
+            c.toEmail?.toLowerCase() === currentUser.email.toLowerCase())
+      );
+
+      if (existingConn) {
+        return {
+          ...prev,
+          shareConnections: list.map((c) =>
+            c.id === existingConn.id
+              ? {
+                  ...c,
+                  fromEmail: currentUser.email.toLowerCase(),
+                  fromName: currentUser.name,
+                  toEmail: targetEmail,
+                  toName: targetName,
+                  status: c.status === 'accepted' ? 'accepted' : 'pending',
+                  fromShareEnabled: true,
+                  updatedAt: now,
+                }
+              : c
+          ),
+        };
+      }
+
+      const newConn = {
+        id: `conn-${now}`,
+        fromEmail: currentUser.email.toLowerCase(),
+        fromName: currentUser.name,
+        toEmail: targetEmail,
+        toName: targetName,
+        status: 'pending',
+        fromShareEnabled: true,
+        toShareEnabled: true,
+        createdAt: new Date().toISOString().slice(0, 10),
+        updatedAt: now,
+      };
+
+      return {
+        ...prev,
+        shareConnections: [newConn, ...list],
+      };
+    });
+
+    setInviteEmailInput('');
+    showToast(`ส่งคำขอแชร์ไปยัง ${targetEmail} แล้ว! รออีกฝ่ายกดรับ`);
+  };
+
+  const handleAcceptShareInvite = (connId) => {
+    const now = Date.now();
     updateState((prev) => ({
       ...prev,
-      familyGroups: prev.familyGroups.map((fg) =>
-        fg.id === found.id && !fg.memberEmails.includes(currentUser.email)
-          ? { ...fg, memberEmails: [...fg.memberEmails, currentUser.email] }
-          : fg
+      // Ensure all my accounts have isSharedWithFamily enabled by default when accepting
+      accounts: prev.accounts.map((a) =>
+        a.ownerEmail === currentUser.email && a.isSharedWithFamily === undefined
+          ? { ...a, isSharedWithFamily: true, updatedAt: now }
+          : a
       ),
-      users: prev.users.map((u) =>
-        u.email === currentUser.email ? { ...u, familyId: found.id } : u
+      shareConnections: (prev.shareConnections || []).map((c) =>
+        c.id === connId
+          ? {
+              ...c,
+              toName: currentUser.name,
+              status: 'accepted',
+              fromShareEnabled: true,
+              toShareEnabled: true,
+              updatedAt: now,
+            }
+          : c
       ),
     }));
-    setCurrentUser((prev) => {
-      const updated = { ...prev, familyId: found.id };
-      saveCurrentUser(updated);
-      return updated;
-    });
-    setJoinCodeInput('');
-    showToast(`เข้าร่วม "${found.name}" สำเร็จ!`);
+    setViewMode('family');
+    showToast('✅ กดรับการแชร์สำเร็จ! ตอนนี้ดูยอดของกันและกันในโหมดคนในบ้านได้แล้ว');
+  };
+
+  const handleDeclineShareInvite = (connId) => {
+    updateState((prev) => ({
+      ...prev,
+      shareConnections: (prev.shareConnections || []).filter((c) => c.id !== connId),
+      deletedIds: [...(prev.deletedIds || []), connId],
+    }));
+    showToast('ปฏิเสธคำขอแชร์แล้ว');
+  };
+
+  const handleToggleMyShareInConnection = (conn) => {
+    const now = Date.now();
+    const isFromMe = conn.fromEmail?.toLowerCase() === currentUser.email.toLowerCase();
+    const nextEnabled = isFromMe ? !conn.fromShareEnabled : !conn.toShareEnabled;
+
+    updateState((prev) => ({
+      ...prev,
+      shareConnections: (prev.shareConnections || []).map((c) => {
+        if (c.id !== conn.id) return c;
+        if (isFromMe) {
+          return { ...c, fromShareEnabled: nextEnabled, updatedAt: now };
+        }
+        return { ...c, toShareEnabled: nextEnabled, updatedAt: now };
+      }),
+    }));
+
+    showToast(
+      nextEnabled
+        ? '🟢 เปิดการแชร์ข้อมูลของฉันให้คนในบ้านเห็นแล้ว'
+        : '⏸️ ปิดการแชร์ข้อมูลของฉันชั่วคราวแล้ว (อีกฝ่ายจะไม่เห็นบัญชีของคุณ)'
+    );
+  };
+
+  const handleRemoveConnection = (connId) => {
+    updateState((prev) => ({
+      ...prev,
+      shareConnections: (prev.shareConnections || []).filter((c) => c.id !== connId),
+      deletedIds: [...(prev.deletedIds || []), connId],
+    }));
+    setFamilyMemberFilter('all');
+    showToast('ยกเลิกการเชื่อมต่อแชร์กับบัญชีนี้แล้ว');
+  };
+
+  const handleManualCloudRefresh = async () => {
+    const currentLocal = loadAppState();
+    const merged = await syncWithCloud(currentLocal);
+    setAppState(merged);
+    showToast('🔄 ซิงค์ข้อมูลล่าสุดกับคนในบ้านเรียบร้อยแล้ว');
   };
 
   const handleExportCSV = () => {
@@ -1488,8 +1699,25 @@ export default function MoneyAppPage() {
             type="button"
             className={`sidebar-nav-btn ${activeTab === 'family' ? 'active' : ''}`}
             onClick={() => setActiveTab('family')}
+            style={{ justifyContent: 'space-between' }}
           >
-            <span>🏠</span> แชร์คนในบ้าน (Family)
+            <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span>🏠</span> แชร์คนในบ้าน (Gmail)
+            </span>
+            {pendingIncomingInvites.length > 0 && (
+              <span
+                style={{
+                  background: '#ec4899',
+                  color: '#fff',
+                  borderRadius: 999,
+                  padding: '2px 8px',
+                  fontSize: '0.72rem',
+                  fontWeight: 800,
+                }}
+              >
+                {pendingIncomingInvites.length} คำขอ
+              </span>
+            )}
           </button>
         </nav>
 
@@ -1550,7 +1778,7 @@ export default function MoneyAppPage() {
               <div style={{ fontWeight: 800, fontSize: '1.02rem', display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span>
                   {viewMode === 'family'
-                    ? currentFamily?.name || 'มุมมองคนในบ้าน'
+                    ? 'มุมมองแชร์คนในบ้าน (ดูอย่างเดียวสำหรับบัญชีคนอื่น)'
                     : `กระเป๋าของ ${currentUser.name}`}
                 </span>
                 <button
@@ -1565,9 +1793,9 @@ export default function MoneyAppPage() {
               </div>
               <div style={{ fontSize: '0.76rem', color: '#64748b' }}>
                 {viewMode === 'family'
-                  ? currentFamily
-                    ? `รวมบัญชีที่แชร์ในบ้าน (${currentFamily.memberEmails.length} คน)`
-                    : 'คุณยังไม่ได้สร้างหรือเข้าร่วมบ้าน (ไปที่แท็บ คนในบ้าน)'
+                  ? sharedByOthersEmails.length > 0
+                    ? `เชื่อมต่อแชร์กับ ${sharedByOthersEmails.join(', ')}`
+                    : 'ยังไม่มีคนที่กดรับการแชร์ (กดแท็บ 🏠 คนในบ้าน เพื่อแอด Gmail)'
                   : currentUser.email}
               </div>
             </div>
@@ -1578,7 +1806,10 @@ export default function MoneyAppPage() {
               <button
                 type="button"
                 className={`mode-btn ${viewMode === 'personal' ? 'active' : ''}`}
-                onClick={() => setViewMode('personal')}
+                onClick={() => {
+                  setViewMode('personal');
+                  setFamilyMemberFilter('all');
+                }}
               >
                 👤 ส่วนตัว
               </button>
@@ -1587,9 +1818,33 @@ export default function MoneyAppPage() {
                 className={`mode-btn ${viewMode === 'family' ? 'active' : ''}`}
                 onClick={() => setViewMode('family')}
               >
-                🏠 ยอดรวมคนในบ้าน
+                🏠 ดูยอดคนในบ้าน {sharedByOthersEmails.length > 0 ? `(${sharedByOthersEmails.length + 1})` : ''}
               </button>
             </div>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('family')}
+              className="btn btn-outline btn-sm"
+              style={{ position: 'relative' }}
+            >
+              👨‍👩‍👧‍👦 แอด Gmail คนในบ้าน
+              {pendingIncomingInvites.length > 0 && (
+                <span
+                  style={{
+                    marginLeft: 6,
+                    background: '#ec4899',
+                    color: '#fff',
+                    borderRadius: 999,
+                    padding: '1px 7px',
+                    fontSize: '0.72rem',
+                    fontWeight: 800,
+                  }}
+                >
+                  {pendingIncomingInvites.length}
+                </span>
+              )}
+            </button>
 
             <button
               type="button"
@@ -1611,6 +1866,152 @@ export default function MoneyAppPage() {
 
         <main className="content-container">
           {/* ================================================================= */}
+          {/* GLOBAL BANNER: INCOMING GMAIL SHARE INVITATIONS (ต้องกดรับก่อน) */}
+          {/* ================================================================= */}
+          {pendingIncomingInvites.length > 0 && (
+            <div
+              style={{
+                background: 'linear-gradient(135deg, #fdf2f8 0%, #fce7f3 100%)',
+                border: '2px solid #ec4899',
+                borderRadius: 16,
+                padding: '16px 20px',
+                marginBottom: 20,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 12,
+                boxShadow: '0 10px 25px -5px rgba(236, 72, 153, 0.2)',
+              }}
+            >
+              <div style={{ fontWeight: 800, color: '#9d174d', fontSize: '1rem', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span>🔔</span> มีคำขอแชร์ดูยอดบัญชีจากคนในบ้าน ({pendingIncomingInvites.length} รายการ)
+              </div>
+              {pendingIncomingInvites.map((inv) => (
+                <div
+                  key={inv.id}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: 10,
+                    background: '#ffffff',
+                    padding: '12px 16px',
+                    borderRadius: 12,
+                    border: '1px solid #fbcfe8',
+                  }}
+                >
+                  <div>
+                    <div style={{ fontWeight: 800, color: '#0f172a' }}>
+                      👤 {inv.fromName} ({inv.fromEmail})
+                    </div>
+                    <div style={{ fontSize: '0.82rem', color: '#64748b' }}>
+                      ขอแชร์ยอดบัญชีให้เห็นกันและกัน (โหมด <strong>ดูอย่างเดียว</strong> แก้ไขหรือลบของกันและกันไม่ได้ และกดปิดการแชร์เมื่อไหร่ก็ได้)
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button
+                      type="button"
+                      onClick={() => handleAcceptShareInvite(inv.id)}
+                      className="btn btn-success btn-sm"
+                    >
+                      ✅ กดรับการแชร์
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeclineShareInvite(inv.id)}
+                      className="btn btn-outline btn-sm"
+                      style={{ color: '#dc2626' }}
+                    >
+                      ✕ ปฏิเสธ
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* ================================================================= */}
+          {/* FAMILY MEMBER FILTER BAR (WHEN IN FAMILY MODE) */}
+          {/* ================================================================= */}
+          {viewMode === 'family' && (
+            <div
+              className="card"
+              style={{
+                marginBottom: 20,
+                padding: '14px 18px',
+                background: '#fdf2f8',
+                border: '1px solid #fbcfe8',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: 12,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontWeight: 800, fontSize: '0.88rem', color: '#9d174d' }}>
+                  👀 เลือกดูบัญชี:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setFamilyMemberFilter('all')}
+                  className={`btn btn-sm ${familyMemberFilter === 'all' ? 'btn-primary' : 'btn-outline'}`}
+                >
+                  🏠 ยอดรวมทุกคน ({sharedByOthersEmails.length + 1} คน)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFamilyMemberFilter(currentUser.email)}
+                  className={`btn btn-sm ${
+                    familyMemberFilter === currentUser.email ? 'btn-primary' : 'btn-outline'
+                  }`}
+                >
+                  👤 ของฉัน ({currentUser.name})
+                </button>
+                {sharedByOthersEmails.map((em) => {
+                  const uObj = appState.users.find((u) => u.email.toLowerCase() === em);
+                  const connObj = acceptedConnections.find(
+                    (c) => c.fromEmail?.toLowerCase() === em || c.toEmail?.toLowerCase() === em
+                  );
+                  const display =
+                    uObj?.name ||
+                    (connObj?.fromEmail?.toLowerCase() === em ? connObj?.fromName : connObj?.toName) ||
+                    em.split('@')[0];
+                  return (
+                    <button
+                      key={em}
+                      type="button"
+                      onClick={() => setFamilyMemberFilter(em)}
+                      className={`btn btn-sm ${
+                        familyMemberFilter === em ? 'btn-primary' : 'btn-outline'
+                      }`}
+                    >
+                      👀 ของ {display} (ดูอย่างเดียว)
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={handleManualCloudRefresh}
+                  className="btn btn-outline btn-sm"
+                >
+                  🔄 อัปเดตยอดล่าสุด
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('family')}
+                  className="btn btn-primary btn-sm"
+                >
+                  ⚙️ ตั้งค่าการแชร์ / ปิดแชร์
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ================================================================= */}
           {/* TAB 1: รวมบัญชี 3 กลุ่มหลัก (ที่เก็บตังค์ / ใช้ก่อนจ่าย / เจ้าหนี้-ลูกหนี้) */}
           {/* ================================================================= */}
           {activeTab === 'dashboard' && (
@@ -1621,7 +2022,9 @@ export default function MoneyAppPage() {
                   <div>
                     <div style={{ fontSize: '0.82rem', opacity: 0.9, fontWeight: 600, marginBottom: 4 }}>
                       {viewMode === 'family'
-                        ? '🏠 ยอดสุทธิรวมของบ้าน (ที่เก็บตังค์ - ใช้ก่อนจ่าย + ลูกหนี้ - เจ้าหนี้)'
+                        ? familyMemberFilter === 'all'
+                          ? '🏠 ยอดสุทธิรวมของบ้าน (ที่เก็บตังค์ - ใช้ก่อนจ่าย + ลูกหนี้ - เจ้าหนี้)'
+                          : `👀 ยอดสุทธิของ ${familyMemberFilter} (โหมดดูอย่างเดียว)`
                         : '💎 ยอดเงินสุทธิรวมทั้งหมด (Net Balance)'}
                     </div>
                     <div style={{ fontSize: '2.25rem', fontWeight: 800, letterSpacing: '-0.02em' }}>
@@ -1635,7 +2038,7 @@ export default function MoneyAppPage() {
                       className="btn btn-sm"
                       style={{ background: 'rgba(255,255,255,0.2)', color: '#fff' }}
                     >
-                      ＋ จดรายรับ
+                      ＋ จดรายรับของฉัน
                     </button>
                     <button
                       type="button"
@@ -1699,7 +2102,7 @@ export default function MoneyAppPage() {
                       </span>
                     </div>
                     <p style={{ fontSize: '0.82rem', color: '#64748b', marginTop: 2 }}>
-                      เช่น BBL, KBank, Wallet, กระเป๋าเงินสด (สร้าง แก้ไข ลบ ได้ตามใจ)
+                      เช่น BBL, KBank, Wallet, กระเป๋าเงินสด (ของตัวเองสร้าง/แก้ไข/ลบได้ • ของคนในบ้านดูอย่างเดียว)
                     </p>
                   </div>
 
@@ -1728,74 +2131,85 @@ export default function MoneyAppPage() {
                   </div>
                 ) : (
                   <div className="grid-2">
-                    {assetAccounts.map((acc) => (
-                      <div
-                        key={acc.id}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          padding: '14px 16px',
-                          borderRadius: 14,
-                          border: '1px solid #e2e8f0',
-                          background: '#f8fafc',
-                          gap: 10,
-                        }}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                          <div
-                            style={{
-                              width: 44,
-                              height: 44,
-                              borderRadius: 12,
-                              background: acc.color || '#059669',
-                              color: '#fff',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              fontSize: '1.25rem',
-                              flexShrink: 0,
-                            }}
-                          >
-                            {ACCOUNT_TYPE_META[acc.type]?.icon || '🏦'}
-                          </div>
-                          <div>
-                            <div style={{ fontWeight: 800, fontSize: '0.98rem', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                              {acc.name}
-                              <span className="badge badge-slate">
-                                {ACCOUNT_TYPE_META[acc.type]?.badge}
-                              </span>
-                              {acc.isSharedWithFamily && (
-                                <span className="badge badge-pink">🏠 แชร์บ้าน</span>
-                              )}
+                    {assetAccounts.map((acc) => {
+                      const isOwner = acc.ownerEmail === currentUser.email;
+                      return (
+                        <div
+                          key={acc.id}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '14px 16px',
+                            borderRadius: 14,
+                            border: isOwner ? '1px solid #e2e8f0' : '1px dashed #cbd5e1',
+                            background: isOwner ? '#f8fafc' : '#fdf2f8',
+                            gap: 10,
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                            <div
+                              style={{
+                                width: 44,
+                                height: 44,
+                                borderRadius: 12,
+                                background: acc.color || '#059669',
+                                color: '#fff',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                fontSize: '1.25rem',
+                                flexShrink: 0,
+                              }}
+                            >
+                              {ACCOUNT_TYPE_META[acc.type]?.icon || '🏦'}
                             </div>
-                            <div style={{ fontSize: '1.15rem', fontWeight: 800, color: '#059669', marginTop: 2 }}>
-                              {formatTHB(acc.balance)}
+                            <div>
+                              <div style={{ fontWeight: 800, fontSize: '0.98rem', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                {acc.name}
+                                <span className="badge badge-slate">
+                                  {ACCOUNT_TYPE_META[acc.type]?.badge}
+                                </span>
+                                {!isOwner && (
+                                  <span className="badge badge-pink">
+                                    👀 ของ {acc.ownerName} (ดูอย่างเดียว)
+                                  </span>
+                                )}
+                              </div>
+                              <div style={{ fontSize: '1.15rem', fontWeight: 800, color: '#059669', marginTop: 2 }}>
+                                {formatTHB(acc.balance)}
+                              </div>
                             </div>
                           </div>
-                        </div>
 
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <button
-                            type="button"
-                            onClick={() => openEditAccountModal(acc)}
-                            className="btn btn-outline btn-sm"
-                            title="แก้ไขชื่อหรือยอดเงิน"
-                          >
-                            ✏️ แก้ไข
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteAccount(acc)}
-                            className="btn btn-outline btn-sm"
-                            style={{ color: '#dc2626' }}
-                            title="ลบบัญชีนี้"
-                          >
-                            🗑️ ลบ
-                          </button>
+                          {isOwner ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <button
+                                type="button"
+                                onClick={() => openEditAccountModal(acc)}
+                                className="btn btn-outline btn-sm"
+                                title="แก้ไขชื่อหรือยอดเงิน"
+                              >
+                                ✏️ แก้ไข
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteAccount(acc)}
+                                className="btn btn-outline btn-sm"
+                                style={{ color: '#dc2626' }}
+                                title="ลบบัญชีนี้"
+                              >
+                                🗑️ ลบ
+                              </button>
+                            </div>
+                          ) : (
+                            <span style={{ fontSize: '0.76rem', color: '#9d174d', fontWeight: 700 }}>
+                              🔒 เห็นอย่างเดียว
+                            </span>
+                          )}
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -1826,7 +2240,7 @@ export default function MoneyAppPage() {
                       </span>
                     </div>
                     <p style={{ fontSize: '0.82rem', color: '#64748b', marginTop: 2 }}>
-                      เช่น บัตรเครดิต BBL, KBank, KTC, SPayLater (สร้าง แก้ไข ลบ และโอนจ่ายบิลได้ตามใจ)
+                      เช่น บัตรเครดิต BBL, KBank, KTC, SPayLater (ของตัวเองสร้าง/แก้ไข/ลบได้ • ของคนในบ้านดูอย่างเดียว)
                     </p>
                   </div>
 
@@ -1856,6 +2270,7 @@ export default function MoneyAppPage() {
                 ) : (
                   <div className="grid-2">
                     {creditAccounts.map((card) => {
+                      const isOwner = card.ownerEmail === currentUser.email;
                       const available = Math.max(0, Number(card.creditLimit) - Number(card.usedAmount));
                       const usagePct =
                         card.creditLimit > 0
@@ -1867,8 +2282,8 @@ export default function MoneyAppPage() {
                           style={{
                             padding: 16,
                             borderRadius: 14,
-                            border: '1px solid #e2e8f0',
-                            background: '#f8fafc',
+                            border: isOwner ? '1px solid #e2e8f0' : '1px dashed #cbd5e1',
+                            background: isOwner ? '#f8fafc' : '#fdf2f8',
                           }}
                         >
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 10 }}>
@@ -1879,8 +2294,10 @@ export default function MoneyAppPage() {
                                 <span className="badge badge-indigo">
                                   {ACCOUNT_TYPE_META[card.type]?.badge}
                                 </span>
-                                {card.isSharedWithFamily && (
-                                  <span className="badge badge-pink">🏠 แชร์บ้าน</span>
+                                {!isOwner && (
+                                  <span className="badge badge-pink">
+                                    👀 ของ {card.ownerName} (ดูอย่างเดียว)
+                                  </span>
                                 )}
                               </div>
                               <div style={{ fontSize: '1.15rem', fontWeight: 800, color: '#dc2626', marginTop: 2 }}>
@@ -1891,34 +2308,40 @@ export default function MoneyAppPage() {
                               </div>
                             </div>
 
-                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setShowPayCardModal(card);
-                                  setPayCardAmount(String(card.usedAmount));
-                                  setPayCardFromAccId(assetAccounts[0]?.id || '');
-                                }}
-                                className="btn btn-primary btn-sm"
-                              >
-                                จ่ายบิล
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => openEditAccountModal(card)}
-                                className="btn btn-outline btn-sm"
-                              >
-                                ✏️ แก้ไข
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteAccount(card)}
-                                className="btn btn-outline btn-sm"
-                                style={{ color: '#dc2626' }}
-                              >
-                                🗑️ ลบ
-                              </button>
-                            </div>
+                            {isOwner ? (
+                              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowPayCardModal(card);
+                                    setPayCardAmount(String(card.usedAmount));
+                                    setPayCardFromAccId(myAssetAccounts[0]?.id || '');
+                                  }}
+                                  className="btn btn-primary btn-sm"
+                                >
+                                  จ่ายบิล
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => openEditAccountModal(card)}
+                                  className="btn btn-outline btn-sm"
+                                >
+                                  ✏️ แก้ไข
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteAccount(card)}
+                                  className="btn btn-outline btn-sm"
+                                  style={{ color: '#dc2626' }}
+                                >
+                                  🗑️ ลบ
+                                </button>
+                              </div>
+                            ) : (
+                              <span style={{ fontSize: '0.76rem', color: '#9d174d', fontWeight: 700 }}>
+                                🔒 เห็นอย่างเดียว
+                              </span>
+                            )}
                           </div>
 
                           <div className="progress-track">
@@ -1963,7 +2386,7 @@ export default function MoneyAppPage() {
                       </span>
                     </div>
                     <p style={{ fontSize: '0.82rem', color: '#64748b', marginTop: 2 }}>
-                      เช่น นายหนึ่ง, นางสอง (สร้าง แก้ไข ลบ และทยอยรับคืน/จ่ายคืนได้ตามใจ)
+                      เช่น นายหนึ่ง, นางสอง (ของตัวเองสร้าง/แก้ไข/ลบได้ • ของคนในบ้านดูอย่างเดียว)
                     </p>
                   </div>
 
@@ -1995,6 +2418,7 @@ export default function MoneyAppPage() {
                 ) : (
                   <div className="grid-2">
                     {visibleLoans.map((loan) => {
+                      const isOwner = loan.ownerEmail === currentUser.email;
                       const remaining = Math.max(0, Number(loan.totalAmount) - Number(loan.paidAmount));
                       const isLend = loan.loanType === 'lend';
                       return (
@@ -2016,8 +2440,13 @@ export default function MoneyAppPage() {
                             <div style={{ fontWeight: 800, fontSize: '0.98rem', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                               <span>👤 {loan.personName}</span>
                               <span className={`badge ${isLend ? 'badge-emerald' : 'badge-amber'}`}>
-                                {isLend ? '🟢 ลูกหนี้ (เราให้ยืม)' : '🟠 เจ้าหนี้ (เรายืมมา)'}
+                                {isLend ? '🟢 ลูกหนี้ (ให้ยืม)' : '🟠 เจ้าหนี้ (ยืมมา)'}
                               </span>
+                              {!isOwner && (
+                                <span className="badge badge-pink">
+                                  👀 ของ {loan.ownerName} (ดูอย่างเดียว)
+                                </span>
+                              )}
                             </div>
                             <div
                               style={{
@@ -2036,36 +2465,42 @@ export default function MoneyAppPage() {
                             </div>
                           </div>
 
-                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                            {loan.status === 'active' && (
+                          {isOwner ? (
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                              {loan.status === 'active' && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowRepayLoanModal(loan);
+                                    setRepayAmount(String(remaining));
+                                    setRepayAccountId(myAssetAccounts[0]?.id || loan.accountId);
+                                  }}
+                                  className="btn btn-success btn-sm"
+                                >
+                                  {isLend ? 'รับเงินคืน' : 'จ่ายคืน'}
+                                </button>
+                              )}
                               <button
                                 type="button"
-                                onClick={() => {
-                                  setShowRepayLoanModal(loan);
-                                  setRepayAmount(String(remaining));
-                                  setRepayAccountId(assetAccounts[0]?.id || loan.accountId);
-                                }}
-                                className="btn btn-success btn-sm"
+                                onClick={() => openEditLoanModal(loan)}
+                                className="btn btn-outline btn-sm"
                               >
-                                {isLend ? 'รับเงินคืน' : 'จ่ายคืน'}
+                                ✏️ แก้ไข
                               </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => openEditLoanModal(loan)}
-                              className="btn btn-outline btn-sm"
-                            >
-                              ✏️ แก้ไข
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteLoan(loan)}
-                              className="btn btn-outline btn-sm"
-                              style={{ color: '#dc2626' }}
-                            >
-                              🗑️ ลบ
-                            </button>
-                          </div>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteLoan(loan)}
+                                className="btn btn-outline btn-sm"
+                                style={{ color: '#dc2626' }}
+                              >
+                                🗑️ ลบ
+                              </button>
+                            </div>
+                          ) : (
+                            <span style={{ fontSize: '0.76rem', color: '#9d174d', fontWeight: 700 }}>
+                              🔒 เห็นอย่างเดียว
+                            </span>
+                          )}
                         </div>
                       );
                     })}
@@ -2079,7 +2514,7 @@ export default function MoneyAppPage() {
                   <div>
                     <h2 style={{ fontSize: '1.05rem', fontWeight: 800 }}>📝 รายการรับ-จ่ายล่าสุด</h2>
                     <p style={{ fontSize: '0.8rem', color: '#64748b' }}>
-                      กดปุ่ม ✏️ ท้ายรายการเพื่อแก้ไขหรือลบรายการได้ตลอดเวลา
+                      รายการของคุณกด ✏️ แก้ไขหรือลบได้ • รายการของคนในบ้านแสดงแบบดูอย่างเดียว
                     </p>
                   </div>
                   <button
@@ -2098,6 +2533,7 @@ export default function MoneyAppPage() {
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                     {visibleTransactions.slice(0, 20).map((tx) => {
+                      const isOwner = tx.ownerEmail === currentUser.email;
                       const allCats = [...EXPENSE_CATEGORIES, ...INCOME_CATEGORIES];
                       const cat = allCats.find((c) => c.id === tx.category) || {
                         icon: tx.type === 'card_payment' ? '💳' : '🔄',
@@ -2114,7 +2550,7 @@ export default function MoneyAppPage() {
                             padding: '12px 14px',
                             borderRadius: 14,
                             border: '1px solid #f1f5f9',
-                            background: '#f8fafc',
+                            background: isOwner ? '#f8fafc' : '#fdf2f8',
                             gap: 10,
                           }}
                         >
@@ -2138,8 +2574,10 @@ export default function MoneyAppPage() {
                             <div>
                               <div style={{ fontWeight: 700, fontSize: '0.94rem', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                                 {tx.note}
-                                {tx.isSharedWithFamily && (
-                                  <span className="badge badge-pink">🏠 แชร์บ้าน</span>
+                                {!isOwner && (
+                                  <span className="badge badge-pink">
+                                    👀 ของ {tx.ownerName}
+                                  </span>
                                 )}
                               </div>
                               <div style={{ fontSize: '0.76rem', color: '#64748b' }}>
@@ -2164,15 +2602,17 @@ export default function MoneyAppPage() {
                               {tx.type === 'income' ? '+' : tx.type === 'expense' ? '-' : ''}
                               {formatTHB(tx.amount)}
                             </div>
-                            <button
-                              type="button"
-                              onClick={() => openEditTransactionModal(tx)}
-                              className="btn btn-outline btn-sm"
-                              style={{ padding: '4px 8px' }}
-                              title="แก้ไขหรือลบรายการนี้"
-                            >
-                              ✏️
-                            </button>
+                            {isOwner && (
+                              <button
+                                type="button"
+                                onClick={() => openEditTransactionModal(tx)}
+                                className="btn btn-outline btn-sm"
+                                style={{ padding: '4px 8px' }}
+                                title="แก้ไขหรือลบรายการนี้"
+                              >
+                                ✏️
+                              </button>
+                            )}
                           </div>
                         </div>
                       );
@@ -2194,7 +2634,7 @@ export default function MoneyAppPage() {
                     💳 จัดการบัญชีธนาคาร, บัตรเครดิต & ใช้ก่อนจ่ายทีหลัง
                   </h1>
                   <p style={{ fontSize: '0.86rem', color: '#64748b' }}>
-                    กด ✏️ บนการ์ดเพื่อแก้ไขชื่อบัญชี วงเงิน วันสรุปยอด ยอดคงเหลือ หรือลบบัญชีได้ทันที
+                    บัญชีของคุณกด ✏️ แก้ไขหรือลบได้ • บัญชีของคนในบ้านแสดงแบบดูอย่างเดียว
                   </p>
                 </div>
                 <div style={{ display: 'flex', gap: 8 }}>
@@ -2226,6 +2666,7 @@ export default function MoneyAppPage() {
                 ) : (
                   <div className="grid-3">
                     {creditAccounts.map((card) => {
+                      const isOwner = card.ownerEmail === currentUser.email;
                       const available = Math.max(0, Number(card.creditLimit) - Number(card.usedAmount));
                       const usagePct =
                         card.creditLimit > 0
@@ -2244,34 +2685,40 @@ export default function MoneyAppPage() {
                               <span className="badge" style={{ background: 'rgba(255,255,255,0.2)', color: '#fff' }}>
                                 {ACCOUNT_TYPE_META[card.type]?.badge}
                               </span>
-                              <div style={{ display: 'flex', gap: 6 }}>
-                                <button
-                                  type="button"
-                                  onClick={() => handleToggleAccountShare(card.id)}
-                                  className="badge"
-                                  style={{
-                                    background: card.isSharedWithFamily ? '#ec4899' : 'rgba(255,255,255,0.15)',
-                                    color: '#fff',
-                                    border: 'none',
-                                    cursor: 'pointer',
-                                  }}
-                                >
-                                  {card.isSharedWithFamily ? '🏠 แชร์บ้าน' : '🔒 ส่วนตัว'}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => openEditAccountModal(card)}
-                                  className="badge"
-                                  style={{
-                                    background: 'rgba(255,255,255,0.22)',
-                                    color: '#fff',
-                                    border: 'none',
-                                    cursor: 'pointer',
-                                  }}
-                                >
-                                  ✏️ แก้ไข
-                                </button>
-                              </div>
+                              {isOwner ? (
+                                <div style={{ display: 'flex', gap: 6 }}>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleAccountShare(card.id)}
+                                    className="badge"
+                                    style={{
+                                      background: card.isSharedWithFamily !== false ? '#ec4899' : 'rgba(255,255,255,0.15)',
+                                      color: '#fff',
+                                      border: 'none',
+                                      cursor: 'pointer',
+                                    }}
+                                  >
+                                    {card.isSharedWithFamily !== false ? '🏠 แชร์บ้าน' : '🔒 ซ่อนส่วนตัว'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => openEditAccountModal(card)}
+                                    className="badge"
+                                    style={{
+                                      background: 'rgba(255,255,255,0.22)',
+                                      color: '#fff',
+                                      border: 'none',
+                                      cursor: 'pointer',
+                                    }}
+                                  >
+                                    ✏️ แก้ไข
+                                  </button>
+                                </div>
+                              ) : (
+                                <span className="badge" style={{ background: '#ec4899', color: '#fff' }}>
+                                  👀 ของ {card.ownerName} (ดูอย่างเดียว)
+                                </span>
+                              )}
                             </div>
                             <div style={{ fontSize: '1.15rem', fontWeight: 800, marginTop: 12 }}>
                               {card.name}
@@ -2299,18 +2746,20 @@ export default function MoneyAppPage() {
                               <span style={{ fontSize: '0.75rem', opacity: 0.8 }}>
                                 วงเงินรวม {formatTHB(card.creditLimit)}
                               </span>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setShowPayCardModal(card);
-                                  setPayCardAmount(String(card.usedAmount));
-                                  setPayCardFromAccId(assetAccounts[0]?.id || '');
-                                }}
-                                className="btn btn-sm"
-                                style={{ background: '#ffffff', color: '#0f172a', fontWeight: 700 }}
-                              >
-                                💳 โอนจ่ายบิลบัตร
-                              </button>
+                              {isOwner && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowPayCardModal(card);
+                                    setPayCardAmount(String(card.usedAmount));
+                                    setPayCardFromAccId(myAssetAccounts[0]?.id || '');
+                                  }}
+                                  className="btn btn-sm"
+                                  style={{ background: '#ffffff', color: '#0f172a', fontWeight: 700 }}
+                                >
+                                  💳 โอนจ่ายบิลบัตร
+                                </button>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -2328,7 +2777,7 @@ export default function MoneyAppPage() {
                       📅 รายการผ่อนชำระรายเดือน (Installment Plans)
                     </h2>
                     <p style={{ fontSize: '0.8rem', color: '#64748b' }}>
-                      ติดตามยอดผ่อน 0% หรือผ่อนของผ่านบัตรเครดิต/PayLater กด ✏️ เพื่อแก้ไขได้ทุกรายการ
+                      ติดตามยอดผ่อน 0% หรือผ่อนของผ่านบัตรเครดิต/PayLater
                     </p>
                   </div>
                   <button
@@ -2347,6 +2796,7 @@ export default function MoneyAppPage() {
                 ) : (
                   <div className="grid-2">
                     {visibleInstallments.map((inst) => {
+                      const isOwner = inst.ownerEmail === currentUser.email;
                       const card = appState.accounts.find((a) => a.id === inst.accountId);
                       const pct = Math.min(100, Math.round((inst.paidMonths / inst.totalMonths) * 100));
                       const remainingMonths = Math.max(0, inst.totalMonths - inst.paidMonths);
@@ -2357,12 +2807,17 @@ export default function MoneyAppPage() {
                             padding: 16,
                             borderRadius: 14,
                             border: '1px solid #e2e8f0',
-                            background: '#f8fafc',
+                            background: isOwner ? '#f8fafc' : '#fdf2f8',
                           }}
                         >
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8, gap: 8 }}>
                             <div>
-                              <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>{inst.title}</div>
+                              <div style={{ fontWeight: 700, fontSize: '0.95rem', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                {inst.title}
+                                {!isOwner && (
+                                  <span className="badge badge-pink">👀 ของ {inst.ownerName}</span>
+                                )}
+                              </div>
                               <div style={{ fontSize: '0.78rem', color: '#64748b' }}>
                                 บัตร: {card?.name || '-'} • ผ่อนเดือนละ{' '}
                                 <strong style={{ color: '#4f46e5' }}>{formatTHB(inst.monthlyAmount)}</strong>
@@ -2372,14 +2827,16 @@ export default function MoneyAppPage() {
                               <span className="badge badge-indigo">
                                 งวด {inst.paidMonths}/{inst.totalMonths}
                               </span>
-                              <button
-                                type="button"
-                                onClick={() => openEditInstallmentModal(inst)}
-                                className="btn btn-outline btn-sm"
-                                style={{ padding: '3px 8px' }}
-                              >
-                                ✏️
-                              </button>
+                              {isOwner && (
+                                <button
+                                  type="button"
+                                  onClick={() => openEditInstallmentModal(inst)}
+                                  className="btn btn-outline btn-sm"
+                                  style={{ padding: '3px 8px' }}
+                                >
+                                  ✏️
+                                </button>
+                              )}
                             </div>
                           </div>
                           <div className="progress-track" style={{ marginBottom: 10 }}>
@@ -2392,7 +2849,7 @@ export default function MoneyAppPage() {
                             <span>
                               ยอดรวม {formatTHB(inst.totalAmount)} (เหลืออีก {remainingMonths} งวด)
                             </span>
-                            {inst.paidMonths < inst.totalMonths && (
+                            {isOwner && inst.paidMonths < inst.totalMonths && (
                               <button
                                 type="button"
                                 onClick={() => handleAdvanceInstallmentMonth(inst)}
@@ -2415,52 +2872,59 @@ export default function MoneyAppPage() {
                   🏦 บัญชีสินทรัพย์ (เงินสด / ธนาคาร / E-Wallet)
                 </h2>
                 <div className="grid-3">
-                  {assetAccounts.map((acc) => (
-                    <div
-                      key={acc.id}
-                      style={{
-                        padding: 16,
-                        borderRadius: 16,
-                        border: '1px solid #e2e8f0',
-                        background: '#ffffff',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        justifyContent: 'space-between',
-                        gap: 12,
-                      }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span className="badge badge-emerald">
-                          {ACCOUNT_TYPE_META[acc.type]?.icon} {ACCOUNT_TYPE_META[acc.type]?.badge}
-                        </span>
-                        <div style={{ display: 'flex', gap: 6 }}>
-                          <button
-                            type="button"
-                            onClick={() => handleToggleAccountShare(acc.id)}
-                            className={`badge ${acc.isSharedWithFamily ? 'badge-pink' : 'badge-slate'}`}
-                            style={{ border: 'none', cursor: 'pointer' }}
-                          >
-                            {acc.isSharedWithFamily ? '🏠 แชร์บ้าน' : '🔒 ส่วนตัว'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => openEditAccountModal(acc)}
-                            className="badge badge-indigo"
-                            style={{ border: 'none', cursor: 'pointer' }}
-                          >
-                            ✏️ แก้ไข
-                          </button>
+                  {assetAccounts.map((acc) => {
+                    const isOwner = acc.ownerEmail === currentUser.email;
+                    return (
+                      <div
+                        key={acc.id}
+                        style={{
+                          padding: 16,
+                          borderRadius: 16,
+                          border: '1px solid #e2e8f0',
+                          background: isOwner ? '#ffffff' : '#fdf2f8',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          justifyContent: 'space-between',
+                          gap: 12,
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span className="badge badge-emerald">
+                            {ACCOUNT_TYPE_META[acc.type]?.icon} {ACCOUNT_TYPE_META[acc.type]?.badge}
+                          </span>
+                          {isOwner ? (
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              <button
+                                type="button"
+                                onClick={() => handleToggleAccountShare(acc.id)}
+                                className={`badge ${acc.isSharedWithFamily !== false ? 'badge-pink' : 'badge-slate'}`}
+                                style={{ border: 'none', cursor: 'pointer' }}
+                              >
+                                {acc.isSharedWithFamily !== false ? '🏠 แชร์บ้าน' : '🔒 ซ่อนส่วนตัว'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => openEditAccountModal(acc)}
+                                className="badge badge-indigo"
+                                style={{ border: 'none', cursor: 'pointer' }}
+                              >
+                                ✏️ แก้ไข
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="badge badge-pink">👀 ของ {acc.ownerName}</span>
+                          )}
+                        </div>
+                        <div>
+                          <div style={{ fontWeight: 700, fontSize: '1rem' }}>{acc.name}</div>
+                          <div style={{ fontSize: '0.76rem', color: '#64748b' }}>โดย {acc.ownerName}</div>
+                        </div>
+                        <div style={{ fontSize: '1.35rem', fontWeight: 800, color: '#059669' }}>
+                          {formatTHB(acc.balance)}
                         </div>
                       </div>
-                      <div>
-                        <div style={{ fontWeight: 700, fontSize: '1rem' }}>{acc.name}</div>
-                        <div style={{ fontSize: '0.76rem', color: '#64748b' }}>โดย {acc.ownerName}</div>
-                      </div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 800, color: '#059669' }}>
-                        {formatTHB(acc.balance)}
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -2477,7 +2941,7 @@ export default function MoneyAppPage() {
                     🤝 ระบบติดตามการยืมเงิน & ให้คนอื่นยืมเงิน
                   </h1>
                   <p style={{ fontSize: '0.86rem', color: '#64748b' }}>
-                    กด ✏️ เพื่อแก้ไขชื่อผู้ยืม ยอดเงิน วันนัดคืน หรือลบรายการได้ตลอดเวลา
+                    รายการของคุณกด ✏️ แก้ไขได้ • รายการของคนในบ้านแสดงแบบดูอย่างเดียว
                   </p>
                 </div>
                 <button
@@ -2494,7 +2958,7 @@ export default function MoneyAppPage() {
                 <div className="card">
                   <div style={{ marginBottom: 14 }}>
                     <h2 style={{ fontSize: '1.05rem', fontWeight: 800, color: '#065f46' }}>
-                      🟢 ลูกหนี้ (เราให้คนอื่นยืม - รอรับคืน)
+                      🟢 ลูกหนี้ (ให้คนอื่นยืม - รอรับคืน)
                     </h2>
                     <p style={{ fontSize: '0.8rem', color: '#64748b' }}>
                       ยอดรอรับคืนทั้งหมด: <strong>{formatTHB(summary.totalReceivableLoans)}</strong>
@@ -2510,6 +2974,7 @@ export default function MoneyAppPage() {
                       visibleLoans
                         .filter((l) => l.loanType === 'lend')
                         .map((loan) => {
+                          const isOwner = loan.ownerEmail === currentUser.email;
                           const remaining = Math.max(0, Number(loan.totalAmount) - Number(loan.paidAmount));
                           const pct = Math.min(
                             100,
@@ -2534,41 +2999,50 @@ export default function MoneyAppPage() {
                                     ) : (
                                       <span className="badge badge-amber">ค้าง {formatTHB(remaining)}</span>
                                     )}
+                                    {!isOwner && (
+                                      <span className="badge badge-pink">👀 ของ {loan.ownerName}</span>
+                                    )}
                                   </div>
                                   <div style={{ fontSize: '0.8rem', color: '#475569', marginTop: 2 }}>
                                     {loan.note} • นัดคืน: {loan.dueDate || '-'}
                                   </div>
                                 </div>
-                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                                  <button
-                                    type="button"
-                                    onClick={() => openEditLoanModal(loan)}
-                                    className="btn btn-outline btn-sm"
-                                    style={{ padding: '4px 8px' }}
-                                  >
-                                    ✏️
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleCopyLoanLineMessage(loan)}
-                                    className="btn btn-outline btn-sm"
-                                  >
-                                    📋 LINE
-                                  </button>
-                                  {loan.status === 'active' && (
+                                {isOwner ? (
+                                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                                     <button
                                       type="button"
-                                      onClick={() => {
-                                        setShowRepayLoanModal(loan);
-                                        setRepayAmount(String(remaining));
-                                        setRepayAccountId(assetAccounts[0]?.id || loan.accountId);
-                                      }}
-                                      className="btn btn-success btn-sm"
+                                      onClick={() => openEditLoanModal(loan)}
+                                      className="btn btn-outline btn-sm"
+                                      style={{ padding: '4px 8px' }}
                                     >
-                                      รับเงินคืน
+                                      ✏️
                                     </button>
-                                  )}
-                                </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleCopyLoanLineMessage(loan)}
+                                      className="btn btn-outline btn-sm"
+                                    >
+                                      📋 LINE
+                                    </button>
+                                    {loan.status === 'active' && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setShowRepayLoanModal(loan);
+                                          setRepayAmount(String(remaining));
+                                          setRepayAccountId(myAssetAccounts[0]?.id || loan.accountId);
+                                        }}
+                                        className="btn btn-success btn-sm"
+                                      >
+                                        รับเงินคืน
+                                      </button>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <span style={{ fontSize: '0.76rem', color: '#9d174d', fontWeight: 700 }}>
+                                    🔒 ดูอย่างเดียว
+                                  </span>
+                                )}
                               </div>
 
                               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: 6 }}>
@@ -2592,7 +3066,7 @@ export default function MoneyAppPage() {
                 <div className="card">
                   <div style={{ marginBottom: 14 }}>
                     <h2 style={{ fontSize: '1.05rem', fontWeight: 800, color: '#92400e' }}>
-                      🟠 เจ้าหนี้ (เรายืมคนอื่นมา - ต้องจ่ายคืน)
+                      🟠 เจ้าหนี้ (ยืมคนอื่นมา - ต้องจ่ายคืน)
                     </h2>
                     <p style={{ fontSize: '0.8rem', color: '#64748b' }}>
                       ยอดที่ต้องคืนทั้งหมด: <strong>{formatTHB(summary.totalPayableLoans)}</strong>
@@ -2608,6 +3082,7 @@ export default function MoneyAppPage() {
                       visibleLoans
                         .filter((l) => l.loanType === 'borrow')
                         .map((loan) => {
+                          const isOwner = loan.ownerEmail === currentUser.email;
                           const remaining = Math.max(0, Number(loan.totalAmount) - Number(loan.paidAmount));
                           const pct = Math.min(
                             100,
@@ -2632,34 +3107,43 @@ export default function MoneyAppPage() {
                                     ) : (
                                       <span className="badge badge-red">เหลือคืน {formatTHB(remaining)}</span>
                                     )}
+                                    {!isOwner && (
+                                      <span className="badge badge-pink">👀 ของ {loan.ownerName}</span>
+                                    )}
                                   </div>
                                   <div style={{ fontSize: '0.8rem', color: '#475569', marginTop: 2 }}>
                                     {loan.note} • กำหนดคืน: {loan.dueDate || '-'}
                                   </div>
                                 </div>
-                                <div style={{ display: 'flex', gap: 6 }}>
-                                  <button
-                                    type="button"
-                                    onClick={() => openEditLoanModal(loan)}
-                                    className="btn btn-outline btn-sm"
-                                    style={{ padding: '4px 8px' }}
-                                  >
-                                    ✏️
-                                  </button>
-                                  {loan.status === 'active' && (
+                                {isOwner ? (
+                                  <div style={{ display: 'flex', gap: 6 }}>
                                     <button
                                       type="button"
-                                      onClick={() => {
-                                        setShowRepayLoanModal(loan);
-                                        setRepayAmount(String(remaining));
-                                        setRepayAccountId(assetAccounts[0]?.id || loan.accountId);
-                                      }}
-                                      className="btn btn-primary btn-sm"
+                                      onClick={() => openEditLoanModal(loan)}
+                                      className="btn btn-outline btn-sm"
+                                      style={{ padding: '4px 8px' }}
                                     >
-                                      โอนจ่ายคืน
+                                      ✏️
                                     </button>
-                                  )}
-                                </div>
+                                    {loan.status === 'active' && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setShowRepayLoanModal(loan);
+                                          setRepayAmount(String(remaining));
+                                          setRepayAccountId(myAssetAccounts[0]?.id || loan.accountId);
+                                        }}
+                                        className="btn btn-primary btn-sm"
+                                      >
+                                        โอนจ่ายคืน
+                                      </button>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <span style={{ fontSize: '0.76rem', color: '#9d174d', fontWeight: 700 }}>
+                                    🔒 ดูอย่างเดียว
+                                  </span>
+                                )}
                               </div>
 
                               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: 6 }}>
@@ -2774,223 +3258,317 @@ export default function MoneyAppPage() {
           )}
 
           {/* ================================================================= */}
-          {/* TAB 5: FAMILY SHARING */}
+          {/* TAB 5: GMAIL CONSENT-BASED FAMILY SHARING */}
           {/* ================================================================= */}
           {activeTab === 'family' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
-              <div>
-                <h1 style={{ fontSize: '1.35rem', fontWeight: 800 }}>
-                  🏠 พื้นที่ครอบครัว & แชร์ยอดรวมกับคนในบ้าน
-                </h1>
-                <p style={{ fontSize: '0.86rem', color: '#64748b' }}>
-                  สร้างบ้านของคุณเพื่อรับรหัสเชิญ หรือกรอกรหัสบ้านเพื่อแชร์ยอดรวมกับคนในครอบครัว
-                </p>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+                <div>
+                  <h1 style={{ fontSize: '1.35rem', fontWeight: 800 }}>
+                    🏠 แอด Gmail คนในบ้านเพื่อดูยอดกันและกัน (เห็นอย่างเดียว)
+                  </h1>
+                  <p style={{ fontSize: '0.86rem', color: '#64748b' }}>
+                    1. พิมพ์ Gmail คนในบ้านเพื่อส่งคำขอ • 2. อีกคนต้องกดรับก่อนถึงจะเห็นกัน • 3. กดปิดการแชร์เมื่อไหร่ก็ได้ และเห็นอย่างเดียวแก้ไขของกันไม่ได้
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleManualCloudRefresh}
+                  className="btn btn-outline btn-sm"
+                >
+                  🔄 ซิงค์สถานะคำขอล่าสุด
+                </button>
               </div>
 
               <div className="grid-2">
-                <div className="card">
-                  {!currentFamily ? (
-                    <div>
-                      <h2 style={{ fontSize: '1.05rem', fontWeight: 800, marginBottom: 12 }}>
-                        🏡 สร้างพื้นที่ครอบครัวใหม่ หรือ เข้าร่วมบ้าน
-                      </h2>
-                      <form onSubmit={handleCreateFamilyGroup} style={{ marginBottom: 20 }}>
-                        <div className="form-group">
-                          <label className="form-label">ตั้งชื่อบ้านของคุณ</label>
-                          <div style={{ display: 'flex', gap: 8 }}>
-                            <input
-                              type="text"
-                              className="form-input"
-                              placeholder={`เช่น บ้านของ ${currentUser.name}`}
-                              value={newFamilyName}
-                              onChange={(e) => setNewFamilyName(e.target.value)}
-                            />
-                            <button type="submit" className="btn btn-primary">
-                              สร้างบ้าน
-                            </button>
-                          </div>
-                        </div>
-                      </form>
+                {/* LEFT CARD: ADD GMAIL & MANAGE CONNECTIONS */}
+                <div className="card" style={{ borderTop: '4px solid #4f46e5' }}>
+                  <h2 style={{ fontSize: '1.08rem', fontWeight: 800, marginBottom: 8 }}>
+                    ➕ 1. เพิ่ม Gmail คนในบ้าน
+                  </h2>
+                  <p style={{ fontSize: '0.82rem', color: '#64748b', marginBottom: 14 }}>
+                    กรอกอีเมล Gmail ของคนในบ้าน เมื่อเขาล็อกอินด้วย Gmail นั้น ระบบจะขึ้นปุ่มให้เขากดรับการแชร์ทันที
+                  </p>
 
-                      <form onSubmit={handleJoinFamilyByCode}>
-                        <div className="form-group">
-                          <label className="form-label">หรือมีรหัสเข้าบ้านของคนในครอบครัวแล้ว?</label>
-                          <div style={{ display: 'flex', gap: 8 }}>
-                            <input
-                              type="text"
-                              className="form-input"
-                              placeholder="เช่น HOME-1234"
-                              value={joinCodeInput}
-                              onChange={(e) => setJoinCodeInput(e.target.value)}
-                            />
-                            <button type="submit" className="btn btn-outline">
-                              เข้าร่วมบ้าน
-                            </button>
-                          </div>
-                        </div>
-                      </form>
-                    </div>
-                  ) : (
-                    <>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                        <h2 style={{ fontSize: '1.05rem', fontWeight: 800 }}>
-                          👨‍👩‍👧‍👦 บ้านของคุณ: {currentFamily.name}
-                        </h2>
-                        <button
-                          type="button"
-                          onClick={openEditProfileModal}
-                          className="btn btn-outline btn-sm"
-                        >
-                          ✏️ แก้ไขชื่อบ้าน
+                  <form onSubmit={handleSendShareInvite} style={{ marginBottom: 22 }}>
+                    <div className="form-group">
+                      <label className="form-label">Gmail ของคนในบ้านที่ต้องการแชร์ด้วย</label>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <input
+                          type="text"
+                          className="form-input"
+                          style={{ flex: 1, minWidth: 200 }}
+                          placeholder="เช่น partner@gmail.com"
+                          value={inviteEmailInput}
+                          onChange={(e) => setInviteEmailInput(e.target.value)}
+                          required
+                        />
+                        <button type="submit" className="btn btn-primary">
+                          📨 ส่งคำขอแชร์
                         </button>
                       </div>
+                    </div>
+                  </form>
+
+                  {/* Incoming Pending Invites */}
+                  {pendingIncomingInvites.length > 0 && (
+                    <div style={{ marginBottom: 20 }}>
+                      <div style={{ fontSize: '0.9rem', fontWeight: 800, color: '#9d174d', marginBottom: 8 }}>
+                        🔔 คำขอแชร์ที่รอคุณกดรับ ({pendingIncomingInvites.length}):
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        {pendingIncomingInvites.map((inv) => (
+                          <div
+                            key={inv.id}
+                            style={{
+                              padding: 14,
+                              borderRadius: 12,
+                              background: '#fdf2f8',
+                              border: '1px solid #f472b6',
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              flexWrap: 'wrap',
+                              gap: 10,
+                            }}
+                          >
+                            <div>
+                              <div style={{ fontWeight: 800 }}>{inv.fromName}</div>
+                              <div style={{ fontSize: '0.8rem', color: '#64748b' }}>{inv.fromEmail}</div>
+                            </div>
+                            <div style={{ display: 'flex', gap: 8 }}>
+                              <button
+                                type="button"
+                                onClick={() => handleAcceptShareInvite(inv.id)}
+                                className="btn btn-success btn-sm"
+                              >
+                                ✅ กดรับการแชร์
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeclineShareInvite(inv.id)}
+                                className="btn btn-outline btn-sm"
+                                style={{ color: '#dc2626' }}
+                              >
+                                ✕ ปฏิเสธ
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Outgoing Pending Invites */}
+                  {pendingOutgoingInvites.length > 0 && (
+                    <div style={{ marginBottom: 20 }}>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 700, color: '#475569', marginBottom: 8 }}>
+                        ⏳ คำขอที่ส่งไปแล้ว (รออีกฝ่ายล็อกอินมากดรับ):
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {pendingOutgoingInvites.map((inv) => (
+                          <div
+                            key={inv.id}
+                            style={{
+                              padding: '10px 14px',
+                              borderRadius: 12,
+                              background: '#f8fafc',
+                              border: '1px dashed #cbd5e1',
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              gap: 8,
+                            }}
+                          >
+                            <div>
+                              <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>{inv.toEmail}</div>
+                              <div style={{ fontSize: '0.76rem', color: '#f59e0b', fontWeight: 600 }}>
+                                ⏳ รอเจ้าตัวกดรับการแชร์
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveConnection(inv.id)}
+                              className="btn btn-outline btn-sm"
+                              style={{ color: '#dc2626' }}
+                            >
+                              ยกเลิกคำขอ
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Active / Accepted Family Connections */}
+                  <div>
+                    <div style={{ fontSize: '0.95rem', fontWeight: 800, marginBottom: 10 }}>
+                      🤝 คนในบ้านที่เชื่อมต่อกันแล้ว ({acceptedConnections.length} คน):
+                    </div>
+                    {acceptedConnections.length === 0 ? (
                       <div
                         style={{
-                          padding: 14,
-                          borderRadius: 14,
-                          background: '#eef2ff',
-                          border: '1px solid #c7d2fe',
-                          marginBottom: 16,
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
+                          padding: 20,
+                          borderRadius: 12,
+                          background: '#f8fafc',
+                          border: '1px solid #e2e8f0',
+                          textAlign: 'center',
+                          color: '#64748b',
+                          fontSize: '0.85rem',
                         }}
                       >
-                        <div>
-                          <div style={{ fontSize: '0.78rem', color: '#4338ca', fontWeight: 600 }}>
-                            รหัสเชิญคนในบ้าน (Invite Code)
-                          </div>
-                          <div style={{ fontSize: '1.35rem', fontWeight: 800, color: '#1e1b4b', letterSpacing: '0.06em' }}>
-                            {currentFamily.inviteCode}
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (typeof navigator !== 'undefined' && navigator.clipboard) {
-                              navigator.clipboard.writeText(currentFamily.inviteCode);
-                              showToast(`คัดลอกรหัสเข้าบ้าน ${currentFamily.inviteCode} แล้ว!`);
-                            }
-                          }}
-                          className="btn btn-primary btn-sm"
-                        >
-                          คัดลอกรหัส
-                        </button>
+                        ยังไม่มีบัญชีที่เชื่อมต่อสำเร็จ ส่งคำขอด้วย Gmail ด้านบนได้เลย
                       </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                        {acceptedConnections.map((conn) => {
+                          const isFromMe =
+                            conn.fromEmail?.toLowerCase() === currentUser.email.toLowerCase();
+                          const partnerEmail = isFromMe ? conn.toEmail : conn.fromEmail;
+                          const partnerName = isFromMe ? conn.toName : conn.fromName;
+                          const myShareOn = isFromMe
+                            ? conn.fromShareEnabled !== false
+                            : conn.toShareEnabled !== false;
+                          const partnerShareOn = isFromMe
+                            ? conn.toShareEnabled !== false
+                            : conn.fromShareEnabled !== false;
 
-                      <div style={{ marginBottom: 16 }}>
-                        <div style={{ fontSize: '0.85rem', fontWeight: 700, marginBottom: 8 }}>
-                          สมาชิกในบ้าน ({currentFamily.memberEmails.length} คน):
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                          {currentFamily.memberEmails.map((email) => (
+                          return (
                             <div
-                              key={email}
+                              key={conn.id}
                               style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                                padding: '8px 12px',
-                                borderRadius: 10,
+                                padding: 16,
+                                borderRadius: 14,
+                                border: '1px solid #cbd5e1',
                                 background: '#f8fafc',
-                                border: '1px solid #e2e8f0',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: 12,
                               }}
                             >
-                              <span>{email}</span>
-                              {email === currentUser.email ? (
-                                <span className="badge badge-indigo">คุณ</span>
-                              ) : (
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
+                                <div>
+                                  <div style={{ fontWeight: 800, fontSize: '0.98rem', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                    <span>👤 {partnerName || partnerEmail}</span>
+                                    <span className="badge badge-emerald">✅ กดรับแล้ว</span>
+                                  </div>
+                                  <div style={{ fontSize: '0.8rem', color: '#475569' }}>{partnerEmail}</div>
+                                  <div style={{ fontSize: '0.78rem', marginTop: 4 }}>
+                                    • สถานะฝั่งเขา:{' '}
+                                    {partnerShareOn ? (
+                                      <strong style={{ color: '#059669' }}>🟢 เปิดให้คุณดูยอดได้ (เห็นอย่างเดียว)</strong>
+                                    ) : (
+                                      <strong style={{ color: '#dc2626' }}>⏸️ เขาปิดการแชร์ชั่วคราว</strong>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {partnerShareOn && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setViewMode('family');
+                                      setFamilyMemberFilter(partnerEmail.toLowerCase());
+                                      setActiveTab('dashboard');
+                                    }}
+                                    className="btn btn-primary btn-sm"
+                                  >
+                                    👀 ดูยอดของ {partnerName || partnerEmail.split('@')[0]}
+                                  </button>
+                                )}
+                              </div>
+
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  paddingTop: 10,
+                                  borderTop: '1px solid #e2e8f0',
+                                  flexWrap: 'wrap',
+                                  gap: 8,
+                                }}
+                              >
                                 <button
                                   type="button"
-                                  onClick={() => handleRemoveFamilyMember(email)}
-                                  className="btn btn-outline btn-sm"
-                                  style={{ padding: '2px 8px', color: '#dc2626' }}
+                                  onClick={() => handleToggleMyShareInConnection(conn)}
+                                  className={`btn btn-sm ${myShareOn ? 'btn-success' : 'btn-outline'}`}
                                 >
-                                  ลบออก
+                                  {myShareOn
+                                    ? '🟢 แชร์ยอดของฉันอยู่ (กดเพื่อปิดการแชร์)'
+                                    : '⏸️ ปิดการแชร์ของฉันอยู่ (กดเพื่อเปิดแชร์)'}
                                 </button>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
 
-                      <form onSubmit={handleInviteFamilyEmail}>
-                        <div className="form-group">
-                          <label className="form-label">เพิ่ม Gmail ของคนในบ้าน</label>
-                          <div style={{ display: 'flex', gap: 8 }}>
-                            <input
-                              type="email"
-                              className="form-input"
-                              placeholder="family.member@gmail.com"
-                              value={inviteEmailInput}
-                              onChange={(e) => setInviteEmailInput(e.target.value)}
-                              required
-                            />
-                            <button type="submit" className="btn btn-primary">
-                              ＋ ชวนเข้าบ้าน
-                            </button>
-                          </div>
-                        </div>
-                      </form>
-                    </>
-                  )}
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveConnection(conn.id)}
+                                  className="btn btn-outline btn-sm"
+                                  style={{ color: '#dc2626' }}
+                                >
+                                  🗑️ ยกเลิกเชื่อมต่อถาวร
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
-                {/* Privacy Toggle for My Accounts */}
-                <div className="card">
-                  <h2 style={{ fontSize: '1.05rem', fontWeight: 800, marginBottom: 6 }}>
-                    🔒 ตั้งค่าและแก้ไขบัญชีของฉัน ({currentUser.email})
+                {/* RIGHT CARD: PRIVACY TOGGLE FOR EACH OF MY ACCOUNTS */}
+                <div className="card" style={{ borderTop: '4px solid #ec4899' }}>
+                  <h2 style={{ fontSize: '1.08rem', fontWeight: 800, marginBottom: 6 }}>
+                    🔒 2. เลือกบัญชีของฉันที่จะให้คนในบ้านเห็น ({currentUser.email})
                   </h2>
-                  <p style={{ fontSize: '0.8rem', color: '#64748b', marginBottom: 14 }}>
-                    เลือกเปิด <strong>&ldquo;🏠 แชร์กับบ้าน&rdquo;</strong> หรือกด <strong>✏️ แก้ไข</strong> เพื่อเปลี่ยนชื่อบัญชีและยอดเงิน
+                  <p style={{ fontSize: '0.82rem', color: '#64748b', marginBottom: 14 }}>
+                    เลือกเปิด <strong>&ldquo;🏠 แชร์ให้เห็น&rdquo;</strong> หรือกด <strong>&ldquo;🔒 ซ่อนส่วนตัว&rdquo;</strong> แยกแต่ละบัญชีได้ตามใจ (คนในบ้านจะเห็นยอดอย่างเดียว แก้ไขหรือลบไม่ได้)
                   </p>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {appState.accounts
-                      .filter((a) => a.ownerEmail === currentUser.email)
-                      .map((acc) => (
-                        <div
-                          key={acc.id}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            padding: '12px 14px',
-                            borderRadius: 12,
-                            border: '1px solid #e2e8f0',
-                            gap: 8,
-                          }}
-                        >
-                          <div>
-                            <div style={{ fontWeight: 700, fontSize: '0.92rem' }}>
-                              {ACCOUNT_TYPE_META[acc.type]?.icon} {acc.name}
-                            </div>
-                            <div style={{ fontSize: '0.78rem', color: '#64748b' }}>
-                              {ACCOUNT_TYPE_META[acc.type]?.isLiability
-                                ? `หนี้ค้าง: ${formatTHB(acc.usedAmount)}`
-                                : `คงเหลือ: ${formatTHB(acc.balance)}`}
-                            </div>
+                    {myAccounts.map((acc) => (
+                      <div
+                        key={acc.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '12px 14px',
+                          borderRadius: 12,
+                          border: '1px solid #e2e8f0',
+                          gap: 8,
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontWeight: 700, fontSize: '0.92rem' }}>
+                            {ACCOUNT_TYPE_META[acc.type]?.icon} {acc.name}
                           </div>
-                          <div style={{ display: 'flex', gap: 6 }}>
-                            <button
-                              type="button"
-                              onClick={() => openEditAccountModal(acc)}
-                              className="btn btn-outline btn-sm"
-                            >
-                              ✏️ แก้ไข
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleToggleAccountShare(acc.id)}
-                              className={`btn btn-sm ${
-                                acc.isSharedWithFamily ? 'btn-primary' : 'btn-outline'
-                              }`}
-                            >
-                              {acc.isSharedWithFamily ? '🏠 แชร์อยู่' : '🔒 ส่วนตัว'}
-                            </button>
+                          <div style={{ fontSize: '0.78rem', color: '#64748b' }}>
+                            {ACCOUNT_TYPE_META[acc.type]?.isLiability
+                              ? `ยอดใช้ไป: ${formatTHB(acc.usedAmount)}`
+                              : `คงเหลือ: ${formatTHB(acc.balance)}`}
                           </div>
                         </div>
-                      ))}
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button
+                            type="button"
+                            onClick={() => openEditAccountModal(acc)}
+                            className="btn btn-outline btn-sm"
+                          >
+                            ✏️ แก้ไข
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleAccountShare(acc.id)}
+                            className={`btn btn-sm ${
+                              acc.isSharedWithFamily !== false ? 'btn-primary' : 'btn-outline'
+                            }`}
+                          >
+                            {acc.isSharedWithFamily !== false ? '🏠 แชร์ให้เห็น' : '🔒 ซ่อนส่วนตัว'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>
@@ -3121,10 +3699,10 @@ export default function MoneyAppPage() {
                     const id = e.target.value;
                     setTxAccountId(id);
                     const acc = appState.accounts.find((a) => a.id === id);
-                    if (acc && !editingTx) setTxShared(Boolean(acc.isSharedWithFamily));
+                    if (acc && !editingTx) setTxShared(acc.isSharedWithFamily !== false);
                   }}
                 >
-                  {visibleAccounts.map((a) => (
+                  {myAccounts.map((a) => (
                     <option key={a.id} value={a.id}>
                       {ACCOUNT_TYPE_META[a.type]?.icon} {a.name}
                     </option>
@@ -3140,7 +3718,7 @@ export default function MoneyAppPage() {
                     value={txToAccountId}
                     onChange={(e) => setTxToAccountId(e.target.value)}
                   >
-                    {visibleAccounts
+                    {myAccounts
                       .filter((a) => a.id !== txAccountId)
                       .map((a) => (
                         <option key={a.id} value={a.id}>
@@ -3441,7 +4019,7 @@ export default function MoneyAppPage() {
                   onChange={(e) => setPayCardFromAccId(e.target.value)}
                   required
                 >
-                  {assetAccounts.map((a) => (
+                  {myAssetAccounts.map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.name} (คงเหลือ {formatTHB(a.balance)})
                     </option>
@@ -3503,11 +4081,11 @@ export default function MoneyAppPage() {
                 <label className="form-label">รูดผ่อนผ่านบัตรเครดิต / PayLater ใบไหน</label>
                 <select
                   className="form-select"
-                  value={instAccountId || creditAccounts[0]?.id || ''}
+                  value={instAccountId || myCreditAccounts[0]?.id || ''}
                   onChange={(e) => setInstAccountId(e.target.value)}
                   required
                 >
-                  {creditAccounts.map((c) => (
+                  {myCreditAccounts.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
                     </option>
@@ -3677,7 +4255,7 @@ export default function MoneyAppPage() {
                   value={loanAccountId}
                   onChange={(e) => setLoanAccountId(e.target.value)}
                 >
-                  {assetAccounts.map((a) => (
+                  {myAssetAccounts.map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.name} (คงเหลือ {formatTHB(a.balance)})
                     </option>
@@ -3781,7 +4359,7 @@ export default function MoneyAppPage() {
                   value={repayAccountId}
                   onChange={(e) => setRepayAccountId(e.target.value)}
                 >
-                  {assetAccounts.map((a) => (
+                  {myAssetAccounts.map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.name} (คงเหลือ {formatTHB(a.balance)})
                     </option>
