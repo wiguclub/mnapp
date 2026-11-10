@@ -1505,18 +1505,74 @@ export default function MoneyAppPage() {
   };
 
   const handleExportCSV = () => {
-    const headers = ['วันที่', 'ประเภท', 'หมวดหมู่', 'รายการ', 'จำนวนเงิน', 'ผู้บันทึก', 'แชร์ในบ้าน'];
-    const rows = visibleTransactions.map((t) => [
-      t.txDate,
-      t.type,
-      t.category,
-      `"${(t.note || '').replace(/"/g, '""')}"`,
-      t.amount,
-      `"${t.ownerName} (${t.ownerEmail})"`,
-      t.isSharedWithFamily ? 'Shared' : 'Personal',
-    ]);
+    const cleanOneLine = (val) =>
+      String(val ?? '')
+        .replace(/[\r\n]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const csvCell = (val) => {
+      const text = cleanOneLine(val);
+      if (text.includes(',') || text.includes('"')) {
+        return `"${text.replace(/"/g, '""')}"`;
+      }
+      return text;
+    };
+
+    const allCats = [...EXPENSE_CATEGORIES, ...INCOME_CATEGORIES];
+    const typeLabelMap = {
+      expense: 'รายจ่าย',
+      income: 'รายรับ',
+      transfer: 'โอนเงิน',
+      card_payment: 'จ่ายบิลบัตร',
+    };
+
+    const headers = [
+      'วันที่',
+      'ประเภท',
+      'ชื่อบัญชี/บัตร',
+      'โอนไปบัญชี',
+      'หมวดหมู่',
+      'รายการ',
+      'จำนวนเงิน',
+      'ผู้บันทึก',
+      'อีเมลผู้บันทึก',
+      'สถานะแชร์',
+    ];
+
+    const sourceList =
+      activeTab === 'transactions' ? filteredAllTransactions : visibleTransactions;
+
+    const rows = sourceList.map((t) => {
+      const acc = appState.accounts.find((a) => a.id === t.accountId);
+      const toAcc = t.toAccountId
+        ? appState.accounts.find((a) => a.id === t.toAccountId)
+        : null;
+      const cat = allCats.find((c) => c.id === t.category);
+      const catLabel = cat
+        ? cat.label
+        : t.type === 'card_payment'
+        ? 'จ่ายบิลบัตรเครดิต'
+        : t.type === 'transfer'
+        ? 'โอนเงินระหว่างบัญชี'
+        : t.category || '-';
+
+      return [
+        csvCell(t.txDate),
+        csvCell(typeLabelMap[t.type] || t.type),
+        csvCell(acc?.name || 'ไม่ระบุบัญชี'),
+        csvCell(toAcc?.name || '-'),
+        csvCell(catLabel),
+        csvCell(t.note || '-'),
+        csvCell(t.amount),
+        csvCell(t.ownerName),
+        csvCell(t.ownerEmail),
+        csvCell(t.isSharedWithFamily ? 'แชร์ในบ้าน' : 'ส่วนตัว'),
+      ];
+    });
+
     const csvContent =
-      '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+      '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -1525,7 +1581,7 @@ export default function MoneyAppPage() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    showToast('ดาวน์โหลดรายงาน CSV สำหรับเปิดใน Excel สำเร็จ');
+    showToast('ดาวน์โหลดรายงาน CSV (มีชื่อบัญชีและจัดแถวเดียวอ่านง่าย) สำเร็จ');
   };
 
   if (!hydrated || !appState) {

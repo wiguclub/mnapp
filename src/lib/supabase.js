@@ -45,14 +45,41 @@ export function createEmptyAppState() {
 export function normalizeState(raw) {
   const base = createEmptyAppState();
   if (!raw || typeof raw !== 'object') return base;
+  const cleanLine = (s) =>
+    typeof s === 'string' ? s.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim() : s;
   return {
-    users: Array.isArray(raw.users) ? raw.users : [],
+    users: Array.isArray(raw.users)
+      ? raw.users.map((u) => (u ? { ...u, name: cleanLine(u.name), email: cleanLine(u.email) } : u))
+      : [],
     familyGroups: Array.isArray(raw.familyGroups) ? raw.familyGroups : [],
     shareConnections: Array.isArray(raw.shareConnections) ? raw.shareConnections : [],
-    accounts: Array.isArray(raw.accounts) ? raw.accounts : [],
-    installments: Array.isArray(raw.installments) ? raw.installments : [],
-    transactions: Array.isArray(raw.transactions) ? raw.transactions : [],
-    loans: Array.isArray(raw.loans) ? raw.loans : [],
+    accounts: Array.isArray(raw.accounts)
+      ? raw.accounts.map((a) =>
+          a ? { ...a, name: cleanLine(a.name), ownerName: cleanLine(a.ownerName) } : a
+        )
+      : [],
+    installments: Array.isArray(raw.installments)
+      ? raw.installments.map((inst) =>
+          inst ? { ...inst, title: cleanLine(inst.title), ownerName: cleanLine(inst.ownerName) } : inst
+        )
+      : [],
+    transactions: Array.isArray(raw.transactions)
+      ? raw.transactions.map((t) =>
+          t ? { ...t, note: cleanLine(t.note), ownerName: cleanLine(t.ownerName) } : t
+        )
+      : [],
+    loans: Array.isArray(raw.loans)
+      ? raw.loans.map((l) =>
+          l
+            ? {
+                ...l,
+                personName: cleanLine(l.personName),
+                note: cleanLine(l.note),
+                ownerName: cleanLine(l.ownerName),
+              }
+            : l
+        )
+      : [],
     deletedIds: Array.isArray(raw.deletedIds) ? raw.deletedIds : [],
   };
 }
